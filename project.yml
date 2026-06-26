@@ -1,0 +1,44 @@
+name: UnifiProtectViewer
+options:
+  bundleIdPrefix: com.unifiprotectviewer
+  deploymentTarget:
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+packages:
+  VLCKitSPM:
+    url: https://github.com/tylerjonesio/vlckit-spm
+    from: 3.5.1
+  Swifter:
+    url: https://github.com/httpswift/swifter.git
+    from: 1.5.0
+
+settings:
+  base:
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  UnifiProtectViewer:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/UnifiProtectViewer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.unifiprotectviewer.app
+        INFOPLIST_FILE: Sources/UnifiProtectViewer/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_HARDENED_RUNTIME: YES
+        # VLCKit RTSP playback + outbound network connections require the
+        # network client entitlement. The local control server (Stream Deck)
+        # requires the network server entitlement.
+        CODE_SIGN_ENTITLEMENTS: Sources/UnifiProtectViewer/Resources/UnifiProtectViewer.entitlements
+    dependencies:
+      - package: VLCKitSPM
+        product: VLCKitSPM
+      - package: Swifter
+        product: Swifter
