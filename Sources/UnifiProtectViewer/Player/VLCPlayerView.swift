@@ -107,11 +107,21 @@ struct VLCPlayerView: NSViewRepresentable {
             player.play()
         }
 
+        /// Serial queue used to tear players down off the main thread.
+        /// `VLCMediaPlayer.stop()` is synchronous and can block for a while
+        /// while the RTSP session closes; doing that for every tile on the main
+        /// thread (e.g. when the grid is replaced by fullscreen) freezes the UI.
+        private static let teardownQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.teardown")
+
         func stop() {
             retryWorkItem?.cancel()
             retryWorkItem = nil
-            if player.isPlaying { player.stop() }
-            player.drawable = nil
+            player.delegate = nil          // no more state callbacks
+            player.drawable = nil          // detach the view (fast, main thread)
+            let p = player                 // keep the player alive until stop completes
+            Coordinator.teardownQueue.async {
+                p.stop()
+            }
         }
 
         /// UniFi RTSPS (port 7441, TLS + SRTP) is not reliably supported by
