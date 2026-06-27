@@ -75,17 +75,17 @@ final class ControlServer {
     // MARK: - Routes
 
     private func configureRoutes() {
-        server["/api/state"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError(nil) }
-        server["/api/views"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError(nil) }
-        server["/api/cameras"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError(nil) }
+        server["/api/state"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
+        server["/api/views"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
+        server["/api/cameras"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
 
-        server.POST["/api/select-view"] = { [weak self] req in self?.handleSelectView(req) ?? .internalServerError(nil) }
-        server.POST["/api/next-view"] = { [weak self] req in self?.handleSimple(req) { $0.controlNextView() } ?? .internalServerError(nil) }
-        server.POST["/api/prev-view"] = { [weak self] req in self?.handleSimple(req) { $0.controlPreviousView() } ?? .internalServerError(nil) }
-        server.POST["/api/fullscreen"] = { [weak self] req in self?.handleFullscreen(req, toggle: false) ?? .internalServerError(nil) }
-        server.POST["/api/toggle-fullscreen"] = { [weak self] req in self?.handleFullscreen(req, toggle: true) ?? .internalServerError(nil) }
-        server.POST["/api/exit-fullscreen"] = { [weak self] req in self?.handleSimple(req) { $0.controlExitFullscreen() } ?? .internalServerError(nil) }
-        server.POST["/api/reconnect"] = { [weak self] req in self?.handleSimple(req) { $0.controlReconnect() } ?? .internalServerError(nil) }
+        server.POST["/api/select-view"] = { [weak self] req in self?.handleSelectView(req) ?? .internalServerError }
+        server.POST["/api/next-view"] = { [weak self] req in self?.handleSimple(req) { $0.controlNextView() } ?? .internalServerError }
+        server.POST["/api/prev-view"] = { [weak self] req in self?.handleSimple(req) { $0.controlPreviousView() } ?? .internalServerError }
+        server.POST["/api/fullscreen"] = { [weak self] req in self?.handleFullscreen(req, toggle: false) ?? .internalServerError }
+        server.POST["/api/toggle-fullscreen"] = { [weak self] req in self?.handleFullscreen(req, toggle: true) ?? .internalServerError }
+        server.POST["/api/exit-fullscreen"] = { [weak self] req in self?.handleSimple(req) { $0.controlExitFullscreen() } ?? .internalServerError }
+        server.POST["/api/reconnect"] = { [weak self] req in self?.handleSimple(req) { $0.controlReconnect() } ?? .internalServerError }
 
         server["/ws"] = websocket(
             text: { [weak self] session, text in
@@ -112,7 +112,7 @@ final class ControlServer {
 
     private func handleGetState(_ req: HttpRequest) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
-        guard let snapshot = snapshotSync() else { return .internalServerError(nil) }
+        guard let snapshot = snapshotSync() else { return .internalServerError }
         return jsonResult(ControlResult(ok: true, message: nil, snapshot: snapshot))
     }
 
@@ -248,7 +248,7 @@ final class ControlServer {
     }
 
     private func jsonResult<T: Encodable>(_ value: T) -> HttpResponse {
-        guard let data = try? JSONEncoder().encode(value) else { return .internalServerError(nil) }
+        guard let data = try? JSONEncoder().encode(value) else { return .internalServerError }
         return .raw(200, "OK", ["Content-Type": "application/json"]) { writer in
             try writer.write(data)
         }
