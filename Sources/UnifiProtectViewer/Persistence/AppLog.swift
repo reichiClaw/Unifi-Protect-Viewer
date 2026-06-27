@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import Darwin
 
 /// Lightweight app-wide logger that keeps recent entries in memory (for the
 /// in-app log viewer) and appends everything to a file on disk.
@@ -106,4 +107,51 @@ final class AppLog: ObservableObject {
 /// Global convenience for logging from anywhere.
 func appLog(_ message: String, _ level: AppLog.Level = .info) {
     AppLog.shared.log(message, level: level)
+}
+
+/// Lightweight process CPU / memory sampling for diagnostics.
+enum SystemStats {
+    static var activeProcessorCount: Int { ProcessInfo.processInfo.activeProcessorCount }
+
+    /// Total CPU usage of this process across all threads, in percent. On a
+    /// multi-core machine this can exceed 100% (e.g. 800% on 8 cores).
+    static func cpuUsagePercent() -> Double {
+        var threadsList: thread_act_array_t?
+        var threadsCount = mach_msg_type_number_t(0)
+        guard task_threads(mach_task_self_, &threadsList, &threadsCount) == KERN_SUCCESS,
+              let threadsList = threadsList else { return 0 }
+        defer {
+            vm_deallocate(mach_task_self_,
+                          vm_address_t(UInt(bitPattern: UnsafeMutableRawPointer(threadsList))),
+                          vm_size_t(Int(threadsCount) * MemoryLayout<thread_t>.stride))
+        }
+        var total = 0.0
+        let infoCount = mach_msg_type_number_t(MemoryLayout<thread_basic_info_data_t>.size / MemoryLayout<integer_t>.size)
+        for i in 0..<Int(threadsCount) {
+            var info = thread_basic_info()
+            var count = infoCount
+            let kr = withUnsafeMutablePointer(to: &info) { ptr -> kern_return_t in
+                ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                    thread_info(threadsList[i], thread_flavor_t(THREAD_BASIC_INFO), $0, &count)
+                }
+            }
+            if kr == KERN_SUCCESS, (info.flags & TH_FLAGS_IDLE) == 0 {
+                total += Double(info.cpu_usage) / Double(TH_USAGE_SCALE) * 100.0
+            }
+        }
+        return total
+    }
+
+    /// Resident memory footprint of the process, in megabytes.
+    static func memoryFootprintMB() -> Double {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &info) { ptr -> kern_return_t in
+            ptr.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+        return Double(info.phys_footprint) / 1024.0 / 1024.0
+    }
 }

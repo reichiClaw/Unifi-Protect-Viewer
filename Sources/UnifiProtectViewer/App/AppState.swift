@@ -33,6 +33,7 @@ final class AppState: ObservableObject {
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
     private var statusPollTimer: Timer?
+    private var statsTimer: Timer?
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -57,6 +58,23 @@ final class AppState: ObservableObject {
         }
         RunLoop.main.add(timer, forMode: .common)
         statusPollTimer = timer
+
+        // Periodic diagnostics: CPU / memory / per-stream state.
+        let stats = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
+            self?.logStats()
+        }
+        RunLoop.main.add(stats, forMode: .common)
+        statsTimer = stats
+    }
+
+    private func logStats() {
+        guard connectionState == .connected else { return }
+        let cpu = SystemStats.cpuUsagePercent()
+        let cores = SystemStats.activeProcessorCount
+        let mem = SystemStats.memoryFootprintMB()
+        let summary = CameraPlayerManager.shared.playbackSummary()
+        appLog(String(format: "Stats: cpu=%.0f%% (%d cores → %d%% max) mem=%.0fMB | %@",
+                      cpu, cores, cores * 100, mem, summary))
     }
 
     private func pollCameraStatus() {
