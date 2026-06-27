@@ -22,6 +22,8 @@ struct FullscreenCameraView: View {
             withAnimation { showControls = hovering }
         }
         .onAppear { showControls = true }
+        // Esc returns to the grid.
+        .onExitCommand { appState.exitFullscreen() }
     }
 
     private var controlBar: some View {

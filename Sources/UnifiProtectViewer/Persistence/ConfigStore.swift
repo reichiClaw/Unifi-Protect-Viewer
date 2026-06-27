@@ -1,20 +1,30 @@
 import Foundation
 
-/// Loads and saves the app configuration to disk (JSON) and the password to
-/// the Keychain.
+/// Loads and saves the app configuration and the controller password to disk.
+///
+/// The password is stored in a separate, permission-restricted file in
+/// Application Support (not the Keychain). The Keychain re-prompts for
+/// authorization whenever the app's code signature changes (which happens on
+/// every local/dev build), which made the saved password effectively
+/// unusable. A 0600 file in the user's Application Support directory avoids the
+/// prompt and loads reliably. The value is base64-encoded (obfuscation, not
+/// encryption).
 final class ConfigStore {
     static let shared = ConfigStore()
 
     private let fileManager = FileManager.default
 
-    private var configURL: URL {
+    private var directory: URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = base.appendingPathComponent("UnifiProtectViewer", isDirectory: true)
         if !fileManager.fileExists(atPath: dir.path) {
             try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
         }
-        return dir.appendingPathComponent("config.json")
+        return dir
     }
+
+    private var configURL: URL { directory.appendingPathComponent("config.json") }
+    private var credentialsURL: URL { directory.appendingPathComponent("credentials.json") }
 
     func load() -> AppConfiguration {
         guard let data = try? Data(contentsOf: configURL) else {
@@ -39,19 +49,46 @@ final class ConfigStore {
         }
     }
 
-    // MARK: - Password (Keychain)
+    // MARK: - Password (file-backed)
 
     func password(for username: String) -> String? {
         guard !username.isEmpty else { return nil }
-        return Keychain.get(account: username)
+        let creds = loadCredentials()
+        guard let encoded = creds[username],
+              let data = Data(base64Encoded: encoded),
+              let password = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return password
     }
 
     func setPassword(_ password: String, for username: String) {
         guard !username.isEmpty else { return }
+        var creds = loadCredentials()
         if password.isEmpty {
-            Keychain.delete(account: username)
+            creds.removeValue(forKey: username)
         } else {
-            Keychain.set(password, account: username)
+            creds[username] = Data(password.utf8).base64EncodedString()
+        }
+        saveCredentials(creds)
+    }
+
+    private func loadCredentials() -> [String: String] {
+        guard let data = try? Data(contentsOf: credentialsURL),
+              let dict = try? JSONDecoder().decode([String: String].self, from: data) else {
+            return [:]
+        }
+        return dict
+    }
+
+    private func saveCredentials(_ creds: [String: String]) {
+        do {
+            let data = try JSONEncoder().encode(creds)
+            try data.write(to: credentialsURL, options: .atomic)
+            // Restrict to the owner only.
+            try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: credentialsURL.path)
+        } catch {
+            NSLog("ConfigStore: failed to save credentials: \(error)")
         }
     }
 }
