@@ -40,7 +40,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var caching = 1500
         var muted = true
         // Watchdog bookkeeping.
-        var lastHealthyAt = Date()
+        var startedAt = Date()
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
         init(id: String) {
@@ -55,12 +55,18 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private let graceSeconds: TimeInterval = 10
     private var watchdog: Timer?
     private let watchdogInterval: TimeInterval = 4
-    /// A stream must be continuously unhealthy for this long before we recover
-    /// it (tolerates normal startup buffering).
-    private let unhealthyGrace: TimeInterval = 12
+    /// How long a stream may stay in opening/buffering (normal startup) before
+    /// we treat it as hung. Generous, because many RTSP streams starting at once
+    /// can legitimately take a while.
+    private let startupGrace: TimeInterval = 30
+    /// How long a stream may stay failed (error/stopped/ended) before recovery.
+    private let failGrace: TimeInterval = 6
     /// Never recover more than this many streams in a single tick — prevents a
     /// network blip from triggering a thundering herd of simultaneous restarts.
     private let maxRecoveriesPerTick = 3
+    /// Stagger (re)starts so we never hit the controller with a connection storm.
+    private var nextStartAt = Date()
+    private let startStagger: TimeInterval = 0.25
 
     override init() {
         super.init()
@@ -143,7 +149,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     private func resetHealth(_ e: Entry) {
         let now = Date()
-        e.lastHealthyAt = now
+        e.startedAt = now
         e.recoveryAttempts = 0
         e.nextRecoveryAllowedAt = now
     }
@@ -158,35 +164,39 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         return media
     }
 
-    /// Start (or resume) playback. The VLC calls run on the **main thread**
-    /// (required for video output on macOS) but via `async` so nothing blocks.
     private func start(_ e: Entry) {
+        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "")", .debug)
+        launch(e, stopFirst: false)
+    }
+
+    /// Start (or restart) playback. VLC calls run on the **main thread**
+    /// (required for video output on macOS), staggered globally so simultaneous
+    /// starts don't storm the controller. When `stopFirst` is set the existing
+    /// player is stopped on its background queue first (clean recovery).
+    private func launch(_ e: Entry, stopFirst: Bool) {
         guard let url = e.activeURL else { return }
         setStatus(e, .buffering)
-        e.lastHealthyAt = Date()
-        appLog("Player[\(e.id)]: start \(url.absoluteString)", .debug)
+        let now = Date()
+        e.startedAt = now
         let caching = e.caching
-        DispatchQueue.main.async { [weak self, weak e] in
-            guard let self = self, let e = e else { return }
+        // Global stagger.
+        let at = max(now, nextStartAt)
+        nextStartAt = at.addingTimeInterval(startStagger)
+        let delay = max(0, at.timeIntervalSince(now))
+
+        let play: () -> Void = { [weak self, weak e] in
+            guard let self = self, let e = e, e.hostedIn != nil else { return }
             e.player.media = self.makeMedia(url: url, caching: caching)
             e.player.play()
         }
-    }
 
-    /// Clean stop (background) → restart (main). Used for recovery.
-    private func restart(_ e: Entry) {
-        guard let url = e.activeURL else { return }
-        setStatus(e, .buffering)
-        e.lastHealthyAt = Date()
-        let caching = e.caching
-        e.controlQueue.async { [weak self, weak e] in
-            guard let e = e else { return }
-            e.player.stop()
-            DispatchQueue.main.async {
-                guard let self = self else { return }
-                e.player.media = self.makeMedia(url: url, caching: caching)
-                e.player.play()
+        if stopFirst {
+            e.controlQueue.async { [weak e] in
+                e?.player.stop()
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: play)
             }
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: play)
         }
     }
 
@@ -199,28 +209,24 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     // MARK: Watchdog
 
-    private func isHealthy(_ e: Entry) -> Bool {
-        switch e.player.state {
-        case .playing, .esAdded:
-            return true
-        default:
-            return false
-        }
-    }
-
+    /// Recover only genuinely-failed or hung streams. Streams that are still
+    /// opening/buffering are given a long startup grace so we never kill a
+    /// stream that's simply taking a while to connect.
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
         for e in entries.values where e.hostedIn != nil {
-            if isHealthy(e) {
-                e.lastHealthyAt = now
+            let state = e.player.state
+            if state == .playing || state == .esAdded {
                 e.recoveryAttempts = 0
                 e.nextRecoveryAllowedAt = now
                 continue
             }
-            guard budget > 0,
-                  now.timeIntervalSince(e.lastHealthyAt) >= unhealthyGrace,
-                  now >= e.nextRecoveryAllowedAt else { continue }
+            let inProgress = (state == .opening || state == .buffering)
+            let grace = inProgress ? startupGrace : failGrace
+            guard now.timeIntervalSince(e.startedAt) >= grace,
+                  now >= e.nextRecoveryAllowedAt,
+                  budget > 0 else { continue }
             budget -= 1
             recover(e, now: now)
         }
@@ -229,11 +235,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func recover(_ e: Entry, now: Date) {
         if applyFallback(e) { return } // rtsps→rtsp, counts as the recovery
         e.recoveryAttempts += 1
-        // Exponential-ish backoff so a dead camera settles to infrequent retries.
+        // Backoff so a permanently-offline camera settles to infrequent retries
+        // instead of thrashing the whole app.
         let backoff = min(15.0 * Double(e.recoveryAttempts), 300.0)
         e.nextRecoveryAllowedAt = now.addingTimeInterval(backoff)
-        appLog("Player[\(e.id)]: unhealthy — restarting (attempt \(e.recoveryAttempts), next try in \(Int(backoff))s)", .warn)
-        restart(e)
+        appLog("Player[\(e.id)]: recovering (attempt \(e.recoveryAttempts), next try in \(Int(backoff))s)", .warn)
+        launch(e, stopFirst: true)
     }
 
     /// UniFi RTSPS (7441, TLS+SRTP) isn't reliably supported by libvlc, so on
@@ -249,7 +256,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.triedFallback = true
         e.activeURL = fb
         appLog("Player[\(e.id)]: RTSPS failed — falling back to \(fb.absoluteString)", .warn)
-        restart(e)
+        launch(e, stopFirst: true)
         return true
     }
 
@@ -276,20 +283,16 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         case .playing, .esAdded:
             e.recoveryAttempts = 0
             e.nextRecoveryAllowedAt = Date()
-            e.lastHealthyAt = Date()
+            appLog("Player[\(e.id)]: PLAYING", .debug)
             setStatus(e, .playing)
         case .buffering, .opening:
             setStatus(e, .buffering)
         case .error:
             appLog("Player[\(e.id)]: ERROR \(e.activeURL?.absoluteString ?? "")", .error)
             setStatus(e, .error)
-            // Let the watchdog recover promptly (respecting backoff).
-            if e.hostedIn != nil { e.lastHealthyAt = .distantPast }
+            // checkHealth() will recover after failGrace (respecting backoff).
         case .ended, .stopped:
-            if e.hostedIn != nil {
-                setStatus(e, .buffering)
-                e.lastHealthyAt = .distantPast
-            }
+            if e.hostedIn != nil { setStatus(e, .buffering) }
         default:
             break
         }
