@@ -111,7 +111,7 @@ struct VLCPlayerView: NSViewRepresentable {
 
         // MARK: VLCMediaPlayerDelegate
 
-        func mediaPlayerStateChanged(_ aNotification: Notification!) {
+        func mediaPlayerStateChanged(_ aNotification: Notification) {
             switch player.state {
             case .playing:
                 retryCount = 0
