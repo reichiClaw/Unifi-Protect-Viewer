@@ -15,9 +15,15 @@ struct CameraGridView: View {
             } else {
                 let columns = columnCount(for: view?.layout ?? .auto, count: cams.count)
                 let spacing: CGFloat = 6
-                let gridItems = Array(repeating: GridItem(.flexible(), spacing: spacing), count: columns)
                 let rows = Int(ceil(Double(cams.count) / Double(columns)))
-                let tileHeight = tileHeight(totalHeight: geo.size.height, rows: rows, spacing: spacing)
+                // Exact cell width so tiles never overflow the trailing edge:
+                // total horizontal spacing = leading + trailing + (cols-1) gaps.
+                let cellWidth = max(80, (geo.size.width - spacing * CGFloat(columns + 1)) / CGFloat(columns))
+                let aspectHeight = cellWidth * 9.0 / 16.0
+                // Also try to fit all rows vertically without scrolling.
+                let fitHeight = (geo.size.height - spacing * CGFloat(rows + 1)) / CGFloat(max(rows, 1))
+                let tileHeight = max(110, min(aspectHeight, fitHeight))
+                let gridItems = Array(repeating: GridItem(.fixed(cellWidth), spacing: spacing), count: columns)
 
                 ScrollView {
                     LazyVGrid(columns: gridItems, spacing: spacing) {
@@ -25,10 +31,10 @@ struct CameraGridView: View {
                             CameraTileView(camera: cam, view: view) {
                                 appState.showFullscreen(cameraID: cam.id)
                             }
-                            .aspectRatio(16.0/9.0, contentMode: .fill)
-                            .frame(height: tileHeight)
+                            .frame(width: cellWidth, height: tileHeight)
                         }
                     }
+                    .frame(maxWidth: .infinity)
                     .padding(spacing)
                 }
                 .background(Color(nsColor: .windowBackgroundColor))
@@ -61,13 +67,5 @@ struct CameraGridView: View {
         case 10...16: return 4
         default: return 5
         }
-    }
-
-    /// Try to fit all rows without scrolling; clamp to a sensible minimum.
-    private func tileHeight(totalHeight: CGFloat, rows: Int, spacing: CGFloat) -> CGFloat {
-        guard rows > 0 else { return 200 }
-        let available = totalHeight - spacing * CGFloat(rows + 1)
-        let height = available / CGFloat(rows)
-        return max(140, height)
     }
 }

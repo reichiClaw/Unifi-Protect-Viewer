@@ -22,20 +22,33 @@ struct VLCPlayerView: NSViewRepresentable {
         Coordinator(status: $status)
     }
 
-    func makeNSView(context: Context) -> NSView {
-        let container = NSView()
+    func makeNSView(context: Context) -> PlayerContainerView {
+        let container = PlayerContainerView()
         container.wantsLayer = true
         container.layer?.backgroundColor = NSColor.black.cgColor
-        context.coordinator.attach(to: container)
-        context.coordinator.play(url: url, networkCaching: networkCachingMs, muted: muted)
+        container.autoresizesSubviews = true
+        let coordinator = context.coordinator
+        coordinator.attach(to: container)
+        // Start playback only once the view is in a window and has a real
+        // surface — starting in makeNSView (zero frame, no window) yields a
+        // black image with VLCKit on macOS.
+        let cachingMs = networkCachingMs
+        let isMuted = muted
+        let streamURL = url
+        container.onMoveToWindow = { [weak coordinator] in
+            coordinator?.play(url: streamURL, networkCaching: cachingMs, muted: isMuted)
+        }
         return container
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {
-        context.coordinator.play(url: url, networkCaching: networkCachingMs, muted: muted)
+    func updateNSView(_ nsView: PlayerContainerView, context: Context) {
+        // Restart only if the URL changed (and only when on-screen).
+        if nsView.window != nil {
+            context.coordinator.play(url: url, networkCaching: networkCachingMs, muted: muted)
+        }
     }
 
-    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+    static func dismantleNSView(_ nsView: PlayerContainerView, coordinator: Coordinator) {
         coordinator.stop()
     }
 
@@ -131,5 +144,16 @@ struct VLCPlayerView: NSViewRepresentable {
                 break
             }
         }
+    }
+}
+
+/// NSView that notifies when it becomes part of a window, so VLCKit playback
+/// can start against a valid drawing surface.
+final class PlayerContainerView: NSView {
+    var onMoveToWindow: (() -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { onMoveToWindow?() }
     }
 }
