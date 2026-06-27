@@ -43,7 +43,7 @@ struct ViewEditorView: View {
                 .frame(width: 180)
 
                 Picker("Quality", selection: $draft.quality) {
-                    Text("Default (\(appState.config.connection.defaultQuality.label))")
+                    Text("Grid default (\(appState.config.connection.gridQuality.label))")
                         .tag(StreamQuality?.none)
                     ForEach(StreamQuality.allCases) { q in
                         Text(q.label).tag(StreamQuality?.some(q))

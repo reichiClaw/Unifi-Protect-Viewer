@@ -12,8 +12,12 @@ struct ConnectionSettings: Codable, Equatable {
     var username: String = ""
     /// Whether to use RTSPS (encrypted, port 7441) instead of RTSP (7447).
     var useRTSPS: Bool = false
-    /// Preferred stream quality when a view does not override it.
+    /// Legacy single quality (kept for migration of older configs).
     var defaultQuality: StreamQuality = .high
+    /// Quality used for tiles in the grid (a view may override it).
+    var gridQuality: StreamQuality = .high
+    /// Quality used when a single camera is shown fullscreen.
+    var fullscreenQuality: StreamQuality = .high
     /// Automatically enable RTSP on cameras that have it disabled.
     var autoEnableRTSP: Bool = true
     /// Network/jitter buffer in milliseconds. Higher = more latency but more
@@ -29,7 +33,10 @@ struct ConnectionSettings: Codable, Equatable {
         host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
         username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
         useRTSPS = try c.decodeIfPresent(Bool.self, forKey: .useRTSPS) ?? false
-        defaultQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .defaultQuality) ?? .high
+        let legacyQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .defaultQuality) ?? .high
+        defaultQuality = legacyQuality
+        gridQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .gridQuality) ?? legacyQuality
+        fullscreenQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .fullscreenQuality) ?? .high
         autoEnableRTSP = try c.decodeIfPresent(Bool.self, forKey: .autoEnableRTSP) ?? true
         streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
     }

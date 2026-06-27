@@ -9,7 +9,7 @@ struct FullscreenCameraView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            CameraTileView(camera: camera, view: appState.currentView, showName: false)
+            CameraTileView(camera: camera, view: appState.currentView, showName: false, isFullscreen: true)
                 .id(camera.id) // recreate player when switching cameras
 
             if showControls {

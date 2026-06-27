@@ -7,6 +7,7 @@ struct CameraTileView: View {
     let camera: ProtectCamera
     let view: CameraGridConfig?
     var showName: Bool = true
+    var isFullscreen: Bool = false
     var onActivate: (() -> Void)? = nil
 
     @EnvironmentObject private var appState: AppState
@@ -16,10 +17,12 @@ struct CameraTileView: View {
     init(camera: ProtectCamera,
          view: CameraGridConfig?,
          showName: Bool = true,
+         isFullscreen: Bool = false,
          onActivate: (() -> Void)? = nil) {
         self.camera = camera
         self.view = view
         self.showName = showName
+        self.isFullscreen = isFullscreen
         self.onActivate = onActivate
         _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
     }
@@ -28,7 +31,7 @@ struct CameraTileView: View {
         ZStack(alignment: .bottomLeading) {
             Color.black
 
-            if let url = appState.streamURL(for: camera, in: view) {
+            if let url = appState.streamURL(for: camera, quality: quality) {
                 CameraVideoView(cameraID: camera.id,
                                 url: url,
                                 caching: appState.config.connection.streamCacheMs)
@@ -52,6 +55,10 @@ struct CameraTileView: View {
         .onHover { hovering = $0 }
         .onTapGesture { onActivate?() }
         .help(camera.displayName)
+    }
+
+    private var quality: StreamQuality {
+        isFullscreen ? appState.fullscreenQuality : appState.gridQuality(for: view)
     }
 
     private var nameBar: some View {

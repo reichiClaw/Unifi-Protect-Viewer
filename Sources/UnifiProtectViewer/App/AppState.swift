@@ -76,7 +76,7 @@ final class AppState: ObservableObject {
         statusMessage = "Connecting to \(config.connection.host)…"
         let connection = config.connection
         let mfa = mfaCode
-        appLog("Connecting to \(connection.host) as \(connection.username) (rtsps=\(connection.useRTSPS), quality=\(connection.defaultQuality.rawValue))")
+        appLog("Connecting to \(connection.host) as \(connection.username) (rtsps=\(connection.useRTSPS), grid=\(connection.gridQuality.rawValue), fullscreen=\(connection.fullscreenQuality.rawValue), buffer=\(connection.streamCacheMs)ms)")
 
         Task {
             do {
@@ -157,7 +157,7 @@ final class AppState: ObservableObject {
             let channels = cam.channels
                 .map { "ch\($0.id)[\($0.width ?? 0)x\($0.height ?? 0) rtsp=\($0.isRtspEnabled ?? false) alias=\($0.rtspAlias ?? "nil")]" }
                 .joined(separator: ", ")
-            let url = streamURL(for: cam, in: currentView)?.absoluteString ?? "nil"
+            let url = streamURL(for: cam, quality: gridQuality(for: currentView))?.absoluteString ?? "nil"
             let level: AppLog.Level = (url == "nil") ? .warn : .info
             appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(url) | \(channels)", level)
         }
@@ -167,14 +167,23 @@ final class AppState: ObservableObject {
 
     func camera(for id: String) -> ProtectCamera? { camerasByID[id] }
 
-    func streamURL(for camera: ProtectCamera, in view: CameraGridConfig?) -> URL? {
-        let quality = view?.quality ?? config.connection.defaultQuality
+    func streamURL(for camera: ProtectCamera, quality: StreamQuality) -> URL? {
         return ProtectAPIClient.streamURL(
             host: config.connection.host,
             camera: camera,
             quality: quality,
             useRTSPS: config.connection.useRTSPS
         )
+    }
+
+    /// Quality for grid tiles: a per-view override wins, else the global grid quality.
+    func gridQuality(for view: CameraGridConfig?) -> StreamQuality {
+        view?.quality ?? config.connection.gridQuality
+    }
+
+    /// Quality for the fullscreen single-camera view.
+    var fullscreenQuality: StreamQuality {
+        config.connection.fullscreenQuality
     }
 
     // MARK: - Views

@@ -23,7 +23,8 @@ private struct ConnectionSettingsTab: View {
     @State private var password: String = ""
     @State private var useRTSPS: Bool = false
     @State private var autoEnableRTSP: Bool = true
-    @State private var quality: StreamQuality = .high
+    @State private var gridQuality: StreamQuality = .high
+    @State private var fullscreenQuality: StreamQuality = .high
     @State private var mfaCode: String = ""
     @State private var cacheMs: Double = 1500
 
@@ -43,7 +44,10 @@ private struct ConnectionSettingsTab: View {
             }
 
             Section {
-                Picker("Default quality", selection: $quality) {
+                Picker("Grid quality", selection: $gridQuality) {
+                    ForEach(StreamQuality.allCases) { q in Text(q.label).tag(q) }
+                }
+                Picker("Fullscreen quality", selection: $fullscreenQuality) {
                     ForEach(StreamQuality.allCases) { q in Text(q.label).tag(q) }
                 }
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
@@ -55,7 +59,7 @@ private struct ConnectionSettingsTab: View {
             } header: {
                 Text("Streaming")
             } footer: {
-                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). For many cameras at once, choose **Low** or **Medium** quality to reduce CPU/bandwidth. A larger **Buffer** adds latency but makes playback much more resilient on a 24/7 wall (≈1500–2500 ms recommended).")
+                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). Use a lower **Grid quality** (Low/Medium) for many cameras to reduce CPU/bandwidth, and a higher **Fullscreen quality** for the single-camera view. A larger **Buffer** adds latency but makes playback much more resilient on a 24/7 wall (≈1500–2500 ms recommended).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -94,7 +98,8 @@ private struct ConnectionSettingsTab: View {
         username = c.username
         useRTSPS = c.useRTSPS
         autoEnableRTSP = c.autoEnableRTSP
-        quality = c.defaultQuality
+        gridQuality = c.gridQuality
+        fullscreenQuality = c.fullscreenQuality
         cacheMs = Double(c.streamCacheMs)
         password = appState.storedPassword ?? ""
     }
@@ -105,7 +110,9 @@ private struct ConnectionSettingsTab: View {
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.useRTSPS = useRTSPS
         c.autoEnableRTSP = autoEnableRTSP
-        c.defaultQuality = quality
+        c.gridQuality = gridQuality
+        c.fullscreenQuality = fullscreenQuality
+        c.defaultQuality = gridQuality // keep legacy field in sync
         c.streamCacheMs = Int(cacheMs)
         return c
     }
