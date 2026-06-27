@@ -42,6 +42,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var online = true
         // Watchdog bookkeeping.
         var startedAt = Date()
+        var lastHealthyAt = Date.distantPast
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
         init(id: String) {
@@ -234,13 +235,18 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         for e in entries.values where e.hostedIn != nil && e.online {
             let state = e.player.state
             if state == .playing || state == .esAdded {
+                e.lastHealthyAt = now
                 e.recoveryAttempts = 0
                 e.nextRecoveryAllowedAt = now
                 continue
             }
+            // Measure unhealthy time from the most recent of "last seen playing"
+            // or "last (re)started" — so brief rebuffers on a long-running stream
+            // don't look like a hang and trigger a needless restart.
             let inProgress = (state == .opening || state == .buffering)
             let grace = inProgress ? startupGrace : failGrace
-            guard now.timeIntervalSince(e.startedAt) >= grace,
+            let reference = max(e.lastHealthyAt, e.startedAt)
+            guard now.timeIntervalSince(reference) >= grace,
                   now >= e.nextRecoveryAllowedAt,
                   budget > 0 else { continue }
             budget -= 1
@@ -299,7 +305,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         case .playing, .esAdded:
             e.recoveryAttempts = 0
             e.nextRecoveryAllowedAt = Date()
-            appLog("Player[\(e.id)]: PLAYING", .debug)
+            e.lastHealthyAt = Date()
             setStatus(e, .playing)
         case .buffering, .opening:
             setStatus(e, .buffering)
