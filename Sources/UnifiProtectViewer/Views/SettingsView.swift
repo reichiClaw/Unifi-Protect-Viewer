@@ -24,6 +24,7 @@ private struct ConnectionSettingsTab: View {
     @State private var useRTSPS: Bool = false
     @State private var autoEnableRTSP: Bool = true
     @State private var quality: StreamQuality = .high
+    @State private var mfaCode: String = ""
 
     var body: some View {
         Form {
@@ -31,10 +32,11 @@ private struct ConnectionSettingsTab: View {
                 TextField("Host / IP", text: $host, prompt: Text("192.168.1.1"))
                 TextField("Username", text: $username, prompt: Text("local Protect account"))
                 SecureField("Password", text: $password)
+                TextField("2FA code (only if enabled)", text: $mfaCode, prompt: Text("optional"))
             } header: {
                 Text("Controller")
             } footer: {
-                Text("Use a *local* UniFi Protect account (not a Ubiquiti cloud login). Read-only accounts work for viewing; enabling RTSP automatically requires admin.")
+                Text("Use a *local* UniFi Protect account (not a Ubiquiti cloud login). Read-only accounts work for viewing; enabling RTSP automatically requires admin. If the account has two-factor auth, enter a current code above just before connecting.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -101,6 +103,7 @@ private struct ConnectionSettingsTab: View {
 
     private func saveAndConnect() {
         save()
+        appState.mfaCode = mfaCode.trimmingCharacters(in: .whitespaces)
         appState.connect()
     }
 }

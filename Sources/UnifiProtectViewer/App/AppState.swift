@@ -25,6 +25,8 @@ final class AppState: ObservableObject {
     @Published var statusMessage: String?
     @Published var selectedViewID: UUID?
     @Published var fullscreenCameraID: String?
+    /// Transient 2FA/MFA code used for the next connect attempt (never persisted).
+    @Published var mfaCode: String = ""
 
     // MARK: Private
     private let apiClient = ProtectAPIClient()
@@ -73,11 +75,12 @@ final class AppState: ObservableObject {
         connectionState = .connecting
         statusMessage = "Connecting to \(config.connection.host)…"
         let connection = config.connection
+        let mfa = mfaCode
 
         Task {
             do {
                 await apiClient.configure(host: connection.host)
-                try await apiClient.login(username: connection.username, password: password)
+                try await apiClient.login(username: connection.username, password: password, mfaToken: mfa)
                 var bootstrap = try await apiClient.fetchBootstrap()
 
                 if connection.autoEnableRTSP {
@@ -95,6 +98,7 @@ final class AppState: ObservableObject {
                     self.applyCameras(loaded)
                     self.connectionState = .connected
                     self.statusMessage = "Connected — \(loaded.count) camera\(loaded.count == 1 ? "" : "s")."
+                    self.mfaCode = ""
                     self.broadcastSnapshot()
                 }
             } catch {

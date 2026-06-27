@@ -3,6 +3,8 @@ import Foundation
 enum ProtectAPIError: LocalizedError {
     case notConfigured
     case invalidHost
+    case invalidCredentials
+    case twoFactorRequired
     case authenticationFailed(Int)
     case requestFailed(Int)
     case decodingFailed(String)
@@ -13,7 +15,11 @@ enum ProtectAPIError: LocalizedError {
         switch self {
         case .notConfigured: return "The controller connection is not configured."
         case .invalidHost: return "The controller host is invalid."
-        case .authenticationFailed(let code): return "Login failed (HTTP \(code)). Check your username and password."
+        case .invalidCredentials:
+            return "Login failed (HTTP 401): invalid credentials. Use a LOCAL UniFi Protect account — not your Ubiquiti cloud (account.ui.com) login. In UniFi Protect go to Settings → Admins & Users → Add, create a user with a local username/password and grant it access to Protect. If that account has two-factor authentication enabled, enter a current 2FA code in Settings, or disable 2FA for it."
+        case .twoFactorRequired:
+            return "This account requires two-factor authentication. Enter a current 2FA code in Settings → Connection and connect again."
+        case .authenticationFailed(let code): return "Login failed (HTTP \(code))."
         case .requestFailed(let code): return "The controller returned an error (HTTP \(code))."
         case .decodingFailed(let detail): return "Failed to parse the controller response: \(detail)"
         case .noCredentials: return "No password is stored for this account."
@@ -65,35 +71,62 @@ actor ProtectAPIClient {
 
     // MARK: - Authentication
 
-    func login(username: String, password: String) async throws {
+    func login(username: String, password: String, mfaToken: String = "") async throws {
         guard !host.isEmpty else { throw ProtectAPIError.notConfigured }
         guard let baseURL = URL(string: "https://\(host)") else { throw ProtectAPIError.invalidHost }
 
         // Step 1: prime the CSRF token by hitting the root.
         await primeCSRFToken(baseURL: baseURL)
 
-        // Step 2: login.
-        guard let loginURL = URL(string: "https://\(host)/api/auth/login") else { throw ProtectAPIError.invalidHost }
-        var request = URLRequest(url: loginURL)
-        request.httpMethod = "POST"
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = csrfToken { request.setValue(token, forHTTPHeaderField: "X-CSRF-Token") }
-        let body: [String: Any] = ["username": username, "password": password, "rememberMe": true]
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Step 2: login. The body mirrors the Protect web UI, including the
+        // `token` field used for two-factor authentication (empty if unused).
+        var (data, http) = try await performLogin(username: username, password: password, mfaToken: mfaToken)
 
-        let (_, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse else {
-            throw ProtectAPIError.requestFailed(-1)
+        // Some controllers require a valid CSRF token on the login request
+        // itself. If we didn't have one and the first attempt failed, fetch a
+        // token from the controller root and retry once.
+        if !(200...299).contains(http.statusCode), csrfToken == nil {
+            await primeCSRFToken(baseURL: baseURL)
+            if csrfToken != nil {
+                (data, http) = try await performLogin(username: username, password: password, mfaToken: mfaToken)
+            }
         }
+
         guard (200...299).contains(http.statusCode) else {
+            let bodyText = (String(data: data, encoding: .utf8) ?? "").lowercased()
+            if http.statusCode == 401 || http.statusCode == 499 {
+                if bodyText.contains("2fa") || bodyText.contains("mfa") || bodyText.contains("two") || bodyText.contains("otp") {
+                    throw ProtectAPIError.twoFactorRequired
+                }
+                throw ProtectAPIError.invalidCredentials
+            }
             throw ProtectAPIError.authenticationFailed(http.statusCode)
         }
+
         // Capture the rotated CSRF token, if provided.
         if let updated = http.value(forHTTPHeaderField: "X-Updated-CSRF-Token")
             ?? http.value(forHTTPHeaderField: "X-CSRF-Token") {
             csrfToken = updated
         }
         isAuthenticated = true
+    }
+
+    private func performLogin(username: String, password: String, mfaToken: String) async throws -> (Data, HTTPURLResponse) {
+        guard let loginURL = URL(string: "https://\(host)/api/auth/login") else { throw ProtectAPIError.invalidHost }
+        var request = URLRequest(url: loginURL)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token = csrfToken { request.setValue(token, forHTTPHeaderField: "X-CSRF-Token") }
+        let body: [String: Any] = [
+            "username": username,
+            "password": password,
+            "token": mfaToken,
+            "rememberMe": true
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw ProtectAPIError.requestFailed(-1) }
+        return (data, http)
     }
 
     private func primeCSRFToken(baseURL: URL) async {
