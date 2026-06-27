@@ -130,21 +130,27 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         let caching = e.caching
         let muted = e.muted
         appLog("Player[\(e.id)]: start \(url.absoluteString)", .debug)
+        // Serialize per camera on the control queue (so we never race a pending
+        // stop), but drive the actual playback on the MAIN thread — VLCKit's
+        // video output/presentation on macOS must be started from the main run
+        // loop, otherwise it decodes a single frame and freezes (a "still").
         e.controlQueue.async {
             let media = VLCMedia(url: url)
             media.addOption(":network-caching=\(caching)")
             media.addOption(":rtsp-tcp")
             media.addOption(":rtsp-frame-buffer-size=500000")
-            media.addOption(":clock-jitter=0")
-            media.addOption(":clock-synchro=0")
             if muted { media.addOption(":no-audio") }
-            e.player.media = media
-            e.player.play()
+            DispatchQueue.main.sync {
+                e.player.media = media
+                e.player.play()
+            }
         }
     }
 
     private func stop(_ e: Entry) {
         setStatus(e, .idle)
+        // Runs on the (background) control queue, serialized after any start —
+        // keeps the main thread responsive while the RTSP session closes.
         e.controlQueue.async {
             e.player.stop()
         }
