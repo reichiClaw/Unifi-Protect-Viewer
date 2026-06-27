@@ -23,6 +23,7 @@ private struct ConnectionSettingsTab: View {
     @State private var password: String = ""
     @State private var useRTSPS: Bool = false
     @State private var autoEnableRTSP: Bool = true
+    @State private var autoConnect: Bool = true
     @State private var gridQuality: StreamQuality = .high
     @State private var fullscreenQuality: StreamQuality = .high
     @State private var mfaCode: String = ""
@@ -35,6 +36,7 @@ private struct ConnectionSettingsTab: View {
                 TextField("Username", text: $username, prompt: Text("local Protect account"))
                 SecureField("Password", text: $password)
                 TextField("2FA code (only if enabled)", text: $mfaCode, prompt: Text("optional"))
+                Toggle("Connect automatically on launch", isOn: $autoConnect)
             } header: {
                 Text("Controller")
             } footer: {
@@ -98,6 +100,7 @@ private struct ConnectionSettingsTab: View {
         username = c.username
         useRTSPS = c.useRTSPS
         autoEnableRTSP = c.autoEnableRTSP
+        autoConnect = c.autoConnect
         gridQuality = c.gridQuality
         fullscreenQuality = c.fullscreenQuality
         cacheMs = Double(c.streamCacheMs)
@@ -110,6 +113,7 @@ private struct ConnectionSettingsTab: View {
         c.username = username.trimmingCharacters(in: .whitespaces)
         c.useRTSPS = useRTSPS
         c.autoEnableRTSP = autoEnableRTSP
+        c.autoConnect = autoConnect
         c.gridQuality = gridQuality
         c.fullscreenQuality = fullscreenQuality
         c.defaultQuality = gridQuality // keep legacy field in sync

@@ -20,6 +20,8 @@ struct ConnectionSettings: Codable, Equatable {
     var fullscreenQuality: StreamQuality = .high
     /// Automatically enable RTSP on cameras that have it disabled.
     var autoEnableRTSP: Bool = true
+    /// Connect automatically when the app launches.
+    var autoConnect: Bool = true
     /// Network/jitter buffer in milliseconds. Higher = more latency but more
     /// resilient to network hiccups (recommended for a 24/7 wall).
     var streamCacheMs: Int = 1500
@@ -38,6 +40,7 @@ struct ConnectionSettings: Codable, Equatable {
         gridQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .gridQuality) ?? legacyQuality
         fullscreenQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .fullscreenQuality) ?? .high
         autoEnableRTSP = try c.decodeIfPresent(Bool.self, forKey: .autoEnableRTSP) ?? true
+        autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
         streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
     }
 

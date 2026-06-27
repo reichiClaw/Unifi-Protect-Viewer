@@ -41,6 +41,13 @@ final class AppState: ObservableObject {
         }
         self.selectedViewID = config.views.first?.id
         startControlServerIfNeeded()
+
+        // Auto-connect on launch when configured and credentials are present.
+        if config.connection.autoConnect,
+           config.connection.isComplete,
+           let pw = storedPassword, !pw.isEmpty {
+            connect()
+        }
     }
 
     // MARK: - Configuration persistence
