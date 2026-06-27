@@ -73,9 +73,38 @@ open UnifiProtectViewer.xcodeproj
 
 ## 5. Resolve packages & build
 
-On first open, Xcode resolves the Swift packages. The VLCKit binary framework is
-large, so the initial **“Resolving Package Versions”** / download step can take a
-few minutes. If it seems stuck:
+On first open, Xcode resolves the Swift packages. **VLCKit's binary framework is
+~750 MB**, so the initial **“Resolving Package Versions”** / download step can
+take several minutes (and needs reliable network access to GitHub).
+
+> ### ⚠️ "Missing package product 'VLCKitSPM'" / "Missing package product 'Swifter'"
+>
+> These mean package resolution did not complete. SwiftPM resolves the whole
+> dependency graph at once, so if the large VLCKit download fails or is
+> cancelled, **both** products are reported missing. To fix:
+>
+> 1. Make sure you have network access and **wait for the VLCKit download to
+>    finish** (watch the activity in the Xcode toolbar).
+> 2. **File → Packages → Reset Package Caches**
+> 3. **File → Packages → Resolve Package Versions** and let it finish.
+> 4. If it still fails, quit Xcode and clear caches, then reopen:
+>    ```bash
+>    rm -rf ~/Library/Caches/org.swift.swiftpm
+>    rm -rf ~/Library/Developer/Xcode/DerivedData/UnifiProtectViewer-*
+>    rm -rf UnifiProtectViewer.xcodeproj
+>    xcodegen generate && open UnifiProtectViewer.xcodeproj
+>    ```
+> 5. As a last resort, add the packages manually: delete the two entries under
+>    `packages:`/`dependencies:` in the Xcode UI, then **File → Add Package
+>    Dependencies…** and paste each URL:
+>    - `https://github.com/tylerjonesio/vlckit-spm` (product **VLCKitSPM**)
+>    - `https://github.com/httpswift/swifter` (product **Swifter**)
+>
+> Once the products resolve, the cascade of `ControlServer` errors
+> (e.g. *"Enum case 'internalServerError' …"*) disappears too — those are only
+> reported while the Swifter module is unresolved.
+
+If resolution seems stuck:
 
 - **File → Packages → Reset Package Caches**, then
 - **File → Packages → Resolve Package Versions**
