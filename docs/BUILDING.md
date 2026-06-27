@@ -52,6 +52,13 @@ xcodegen generate
 This creates `UnifiProtectViewer.xcodeproj` (it is git-ignored — regenerate it
 any time `project.yml` changes).
 
+> **Adding/removing files:** the project uses Xcode 16 *synchronized folders*
+> (`defaultSourceDirectoryType: syncedFolder`), so new source files pulled from
+> git are included automatically — no need to regenerate. If you are on
+> **Xcode 15**, change `defaultSourceDirectoryType` to `group` (and remove
+> `projectFormat`) in `project.yml`, and re-run `xcodegen generate` whenever
+> files are added or removed.
+
 ## 4. Open and configure signing
 
 ```bash

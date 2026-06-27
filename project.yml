@@ -4,6 +4,12 @@ options:
   deploymentTarget:
     macOS: "13.0"
   createIntermediateGroups: true
+  # Use Xcode 16 "buildable" synchronized folders so newly added source files
+  # are picked up automatically without re-running `xcodegen generate`.
+  # Requires Xcode 16+. If you are on Xcode 15, change this to `group` and
+  # re-run `xcodegen generate` whenever files are added or removed.
+  projectFormat: xcode16_0
+  defaultSourceDirectoryType: syncedFolder
 
 packages:
   VLCKitSPM:
