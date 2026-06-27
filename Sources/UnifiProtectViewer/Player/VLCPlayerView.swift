@@ -2,249 +2,292 @@ import SwiftUI
 import AppKit
 import VLCKitSPM
 
-/// SwiftUI wrapper around a VLCKit `VLCMediaPlayer` for RTSP/RTSPS playback.
+/// Playback state surfaced to the tile UI.
+enum PlaybackStatus: Equatable {
+    case idle, buffering, playing, error
+}
+
+/// Observable per-camera status so SwiftUI tiles can show overlays.
+final class CameraPlaybackStatus: ObservableObject {
+    @Published var state: PlaybackStatus = .idle
+}
+
+/// Owns and **reuses** one `VLCMediaPlayer` (and its video surface) per camera.
 ///
-/// Each instance owns one player drawing into a layer-backed `NSView`. Stream
-/// state is surfaced through `PlaybackStatus` so the tile UI can show buffering
-/// / error overlays, and the coordinator auto-retries on stream errors.
-struct VLCPlayerView: NSViewRepresentable {
-    let url: URL
-    /// Lower latency at the cost of a bit more CPU. ~150–500ms network cache.
-    var networkCachingMs: Int = 300
-    var muted: Bool = true
-    @Binding var status: PlaybackStatus
+/// Why: creating/destroying players every time the grid or fullscreen view
+/// changes is slow, causes black frames (a cold player has nothing to show
+/// yet), and crashes under rapid switching (concurrent start/stop and dealloc
+/// races). Instead we keep a player alive per camera and, when the UI changes,
+/// simply **reparent** its already-rendering surface into the new host view —
+/// which is instant and seamless. Players that go off-screen are stopped after
+/// a short grace period (so rapid back-and-forth keeps them warm), and all
+/// start/stop calls for a given player are serialized to avoid races.
+final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
+    static let shared = CameraPlayerManager()
 
-    enum PlaybackStatus: Equatable {
-        case idle, buffering, playing, error
-    }
-
-    func makeCoordinator() -> Coordinator {
-        Coordinator(status: $status)
-    }
-
-    func makeNSView(context: Context) -> PlayerContainerView {
-        let container = PlayerContainerView()
-        let coordinator = context.coordinator
-        // VLC draws into a dedicated, autoresizing subview to avoid layer /
-        // background conflicts that can cause a black image.
-        coordinator.attach(to: container.videoView)
-        // Start playback only once the view is in a window and has a real
-        // surface — starting in makeNSView (zero frame, no window) yields a
-        // black image with VLCKit on macOS.
-        let cachingMs = networkCachingMs
-        let isMuted = muted
-        let streamURL = url
-        container.onMoveToWindow = { [weak coordinator] in
-            coordinator?.play(url: streamURL, networkCaching: cachingMs, muted: isMuted)
-        }
-        return container
-    }
-
-    func updateNSView(_ nsView: PlayerContainerView, context: Context) {
-        // Restart only if the URL changed (and only when on-screen).
-        if nsView.window != nil {
-            context.coordinator.play(url: url, networkCaching: networkCachingMs, muted: muted)
+    private final class Entry {
+        let id: String
+        let player = VLCMediaPlayer()
+        let surface = NSView()
+        let status = CameraPlaybackStatus()
+        let controlQueue: DispatchQueue
+        var requestedURL: URL?
+        var activeURL: URL?
+        var triedFallback = false
+        var retryCount = 0
+        var retryWork: DispatchWorkItem?
+        var stopWork: DispatchWorkItem?
+        weak var hostedIn: NSView?
+        var caching = 300
+        var muted = true
+        init(id: String) {
+            self.id = id
+            controlQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.\(id)")
         }
     }
 
-    static func dismantleNSView(_ nsView: PlayerContainerView, coordinator: Coordinator) {
-        coordinator.stop()
+    private var entries: [String: Entry] = [:]
+    /// Keep a stopped stream's player around (warm) for this long after it goes
+    /// off-screen, so flipping back to it resumes instantly.
+    private let graceSeconds: TimeInterval = 8
+
+    // MARK: Public API (all called on the main thread)
+
+    func status(for id: String) -> CameraPlaybackStatus {
+        entry(for: id).status
     }
 
-    final class Coordinator: NSObject, VLCMediaPlayerDelegate {
-        private let player = VLCMediaPlayer()
-        /// What SwiftUI asked us to play (used to dedupe restarts).
-        private var requestedURL: URL?
-        /// What we are actually playing (may differ after an RTSPS→RTSP fallback).
-        private var activeURL: URL?
-        private var triedRTSPFallback = false
-        private var retryWorkItem: DispatchWorkItem?
-        private var retryCount = 0
-        private let statusBinding: Binding<PlaybackStatus>
+    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool) {
+        let e = entry(for: id)
+        e.stopWork?.cancel(); e.stopWork = nil
+        e.caching = caching
+        e.muted = muted
 
-        private weak var drawableView: NSView?
-        private var lastCachingMs = 300
-        private var lastMuted = true
-
-        init(status: Binding<PlaybackStatus>) {
-            self.statusBinding = status
-            super.init()
-            player.delegate = self
+        if e.surface.superview !== host {
+            e.surface.removeFromSuperview()
+            e.surface.frame = host.bounds
+            e.surface.autoresizingMask = [.width, .height]
+            host.addSubview(e.surface)
         }
+        e.hostedIn = host
 
-        func attach(to view: NSView) {
-            drawableView = view
-            player.drawable = view
+        if e.requestedURL != url {
+            e.requestedURL = url
+            e.activeURL = url
+            e.triedFallback = false
+            e.retryCount = 0
+            start(e)
+        } else {
+            switch e.player.state {
+            case .playing, .buffering, .opening, .esAdded:
+                break // already running — keep it
+            default:
+                e.retryCount = 0
+                start(e)
+            }
         }
+    }
 
-        func play(url: URL, networkCaching: Int, muted: Bool) {
-            // Only (re)start when the requested URL actually changes; otherwise
-            // SwiftUI updates would interrupt a live stream while it buffers.
-            if requestedURL == url { return }
-            requestedURL = url
-            activeURL = url
-            triedRTSPFallback = false
-            lastCachingMs = networkCaching
-            lastMuted = muted
-            retryCount = 0
-            appLog("Player: start \(url.absoluteString)")
-            startPlayback(networkCaching: networkCaching, muted: muted)
+    func detach(cameraID id: String, from host: NSView) {
+        guard let e = entries[id], e.hostedIn === host else { return }
+        e.surface.removeFromSuperview()
+        e.hostedIn = nil
+        e.retryWork?.cancel(); e.retryWork = nil
+        e.stopWork?.cancel()
+        let work = DispatchWorkItem { [weak self, weak e] in
+            guard let self = self, let e = e, e.hostedIn == nil else { return }
+            self.stop(e)
         }
+        e.stopWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + graceSeconds, execute: work)
+    }
 
-        private func startPlayback(networkCaching: Int, muted: Bool) {
-            guard let url = activeURL else { return }
+    /// Stop and tear down every player (e.g. on disconnect).
+    func stopAll() {
+        for (_, e) in entries {
+            e.retryWork?.cancel(); e.retryWork = nil
+            e.stopWork?.cancel(); e.stopWork = nil
+            stop(e)
+        }
+    }
+
+    // MARK: Internals
+
+    private func entry(for id: String) -> Entry {
+        if let e = entries[id] { return e }
+        let e = Entry(id: id)
+        e.surface.wantsLayer = true
+        e.surface.layer?.backgroundColor = NSColor.black.cgColor
+        e.player.drawable = e.surface
+        e.player.delegate = self
+        entries[id] = e
+        return e
+    }
+
+    private func start(_ e: Entry) {
+        guard let url = e.activeURL else { return }
+        setStatus(e, .buffering)
+        let caching = e.caching
+        let muted = e.muted
+        appLog("Player[\(e.id)]: start \(url.absoluteString)", .debug)
+        e.controlQueue.async {
             let media = VLCMedia(url: url)
-            media.addOption(":network-caching=\(networkCaching)")
-            media.addOption(":rtsp-tcp")          // force TCP for reliability over wifi
+            media.addOption(":network-caching=\(caching)")
+            media.addOption(":rtsp-tcp")
             media.addOption(":rtsp-frame-buffer-size=500000")
             media.addOption(":clock-jitter=0")
             media.addOption(":clock-synchro=0")
-            if muted {
-                media.addOption(":no-audio")
-            }
-            player.media = media
-            updateStatus(.buffering)
-            player.play()
+            if muted { media.addOption(":no-audio") }
+            e.player.media = media
+            e.player.play()
         }
+    }
 
-        /// Serial queue used to tear players down off the main thread.
-        /// `VLCMediaPlayer.stop()` is synchronous and can block for a while
-        /// while the RTSP session closes; doing that for every tile on the main
-        /// thread (e.g. when the grid is replaced by fullscreen) freezes the UI.
-        private static let teardownQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.teardown")
-
-        func stop() {
-            retryWorkItem?.cancel()
-            retryWorkItem = nil
-            player.delegate = nil          // no more state callbacks
-            player.drawable = nil          // detach the view (fast, main thread)
-            let p = player                 // keep the player alive until stop completes
-            Coordinator.teardownQueue.async {
-                p.stop()
-            }
+    private func stop(_ e: Entry) {
+        setStatus(e, .idle)
+        e.controlQueue.async {
+            e.player.stop()
         }
+    }
 
-        /// UniFi RTSPS (port 7441, TLS + SRTP) is not reliably supported by
-        /// libvlc due to the controller's self-signed certificate. The same
-        /// stream is available unencrypted via RTSP on port 7447, so on failure
-        /// we transparently switch to it.
-        private func rtspFallback(for url: URL) -> URL? {
-            guard url.scheme?.lowercased() == "rtsps" else { return nil }
-            guard var comps = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
-            comps.scheme = "rtsp"
-            comps.port = 7447
-            comps.query = nil // drop ?enableSrtp
-            return comps.url
+    private func applyFallback(_ e: Entry) -> Bool {
+        guard e.hostedIn != nil, !e.triedFallback,
+              let active = e.activeURL, active.scheme?.lowercased() == "rtsps",
+              var comps = URLComponents(url: active, resolvingAgainstBaseURL: false),
+              let _ = active.host else { return false }
+        comps.scheme = "rtsp"
+        comps.port = 7447
+        comps.query = nil
+        guard let fb = comps.url else { return false }
+        e.triedFallback = true
+        e.activeURL = fb
+        e.retryCount = 0
+        appLog("Player[\(e.id)]: RTSPS failed — falling back to \(fb.absoluteString)", .warn)
+        start(e)
+        return true
+    }
+
+    private func scheduleRetry(_ e: Entry) {
+        guard e.hostedIn != nil else { return } // don't retry off-screen players
+        e.retryWork?.cancel()
+        e.retryCount += 1
+        let delay = min(pow(2.0, Double(e.retryCount - 1)), 10.0)
+        let work = DispatchWorkItem { [weak self, weak e] in
+            guard let self = self, let e = e, e.hostedIn != nil else { return }
+            appLog("Player[\(e.id)]: retry #\(e.retryCount)", .warn)
+            self.start(e)
         }
+        e.retryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
 
-        /// Returns true if a fallback was applied and playback (re)started.
-        private func applyRTSPFallbackIfPossible() -> Bool {
-            guard !triedRTSPFallback, let active = activeURL, let fb = rtspFallback(for: active) else {
-                return false
-            }
-            triedRTSPFallback = true
-            activeURL = fb
-            retryCount = 0
-            appLog("Player: RTSPS failed — falling back to \(fb.absoluteString)", .warn)
-            startPlayback(networkCaching: lastCachingMs, muted: lastMuted)
-            return true
+    private func setStatus(_ e: Entry, _ s: PlaybackStatus) {
+        let apply = { if e.status.state != s { e.status.state = s } }
+        if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
+    }
+
+    // MARK: VLCMediaPlayerDelegate
+
+    func mediaPlayerStateChanged(_ aNotification: Notification) {
+        let object = aNotification.object
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self,
+                  let player = object as? VLCMediaPlayer,
+                  let e = self.entries.values.first(where: { $0.player === player }) else { return }
+            self.handleState(e)
         }
+    }
 
-        private func scheduleRetry() {
-            retryWorkItem?.cancel()
-            retryCount += 1
-            // Back off: 1s, 2s, 4s … capped at 10s.
-            let delay = min(pow(2.0, Double(retryCount - 1)), 10.0)
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                appLog("Player: retry #\(self.retryCount) \(self.activeURL?.absoluteString ?? "")", .warn)
-                self.startPlayback(networkCaching: self.lastCachingMs, muted: self.lastMuted)
+    private func handleState(_ e: Entry) {
+        switch e.player.state {
+        case .playing, .esAdded:
+            e.retryCount = 0
+            setStatus(e, .playing)
+        case .buffering, .opening:
+            setStatus(e, .buffering)
+        case .error:
+            appLog("Player[\(e.id)]: ERROR \(e.activeURL?.absoluteString ?? "")", .error)
+            if applyFallback(e) { return }
+            setStatus(e, .error)
+            scheduleRetry(e)
+        case .ended, .stopped:
+            // A live stream shouldn't end; if we still want it, recover.
+            if e.hostedIn != nil {
+                if applyFallback(e) { return }
+                setStatus(e, .buffering)
+                scheduleRetry(e)
             }
-            retryWorkItem = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-        }
-
-        private func updateStatus(_ status: PlaybackStatus) {
-            DispatchQueue.main.async {
-                if self.statusBinding.wrappedValue != status {
-                    self.statusBinding.wrappedValue = status
-                }
-            }
-        }
-
-        // MARK: VLCMediaPlayerDelegate
-
-        func mediaPlayerStateChanged(_ aNotification: Notification) {
-            let url = activeURL?.absoluteString ?? ""
-            switch player.state {
-            case .playing:
-                retryCount = 0
-                let size = drawableView?.bounds.size ?? .zero
-                appLog("Player: PLAYING \(url) (view \(Int(size.width))x\(Int(size.height)))")
-                updateStatus(.playing)
-            case .buffering, .opening:
-                appLog("Player: \(stateName) \(url)", .debug)
-                updateStatus(.buffering)
-            case .error:
-                appLog("Player: ERROR \(url)", .error)
-                updateStatus(.buffering)
-                if applyRTSPFallbackIfPossible() { return }
-                updateStatus(.error)
-                scheduleRetry()
-            case .ended, .stopped:
-                // Live streams should not "end"; treat as a drop and retry.
-                if requestedURL != nil {
-                    if applyRTSPFallbackIfPossible() { return }
-                    appLog("Player: \(stateName) \(url) — will retry", .warn)
-                    updateStatus(.buffering)
-                    scheduleRetry()
-                }
-            default:
-                break
-            }
-        }
-
-        private var stateName: String {
-            switch player.state {
-            case .stopped: return "STOPPED"
-            case .opening: return "OPENING"
-            case .buffering: return "BUFFERING"
-            case .ended: return "ENDED"
-            case .error: return "ERROR"
-            case .playing: return "PLAYING"
-            case .paused: return "PAUSED"
-            default: return "STATE(\(player.state.rawValue))"
-            }
+        default:
+            break
         }
     }
 }
 
-/// NSView that hosts VLCKit's video output in a dedicated subview and notifies
-/// when it becomes part of a window, so playback can start against a valid
-/// drawing surface.
-final class PlayerContainerView: NSView {
-    /// The view VLC renders into. Tracks the container's bounds.
-    let videoView = NSView()
-    var onMoveToWindow: (() -> Void)?
+// MARK: - SwiftUI video view
+
+/// A lightweight SwiftUI view that hosts a camera's (pooled) video surface.
+/// It never owns a player — it just asks the manager to host the camera's
+/// surface inside it while on screen.
+struct CameraVideoView: NSViewRepresentable {
+    let cameraID: String
+    let url: URL
+    var caching: Int = 300
+    var muted: Bool = true
+
+    func makeNSView(context: Context) -> HostView {
+        let host = HostView()
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted)
+        return host
+    }
+
+    func updateNSView(_ host: HostView, context: Context) {
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted)
+    }
+
+    static func dismantleNSView(_ host: HostView, coordinator: Void) {
+        CameraPlayerManager.shared.detach(cameraID: host.cameraID, from: host)
+    }
+}
+
+/// Container that hosts a pooled camera surface while it is in a window.
+final class HostView: NSView {
+    private(set) var cameraID = ""
+    private var url: URL?
+    private var caching = 300
+    private var muted = true
 
     init() {
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.black.cgColor
         autoresizesSubviews = true
-        videoView.wantsLayer = true
-        videoView.translatesAutoresizingMaskIntoConstraints = true
-        videoView.autoresizingMask = [.width, .height]
-        videoView.frame = bounds
-        addSubview(videoView)
     }
 
-    required init?(coder: NSCoder) {
-        super.init(coder: coder)
+    required init?(coder: NSCoder) { super.init(coder: coder) }
+
+    func configure(cameraID: String, url: URL, caching: Int, muted: Bool) {
+        let cameraChanged = self.cameraID != cameraID
+        if cameraChanged, !self.cameraID.isEmpty {
+            CameraPlayerManager.shared.detach(cameraID: self.cameraID, from: self)
+        }
+        self.cameraID = cameraID
+        self.url = url
+        self.caching = caching
+        self.muted = muted
+        if window != nil { attachIfPossible() }
     }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { onMoveToWindow?() }
+        if window != nil {
+            attachIfPossible()
+        } else if !cameraID.isEmpty {
+            CameraPlayerManager.shared.detach(cameraID: cameraID, from: self)
+        }
+    }
+
+    private func attachIfPossible() {
+        guard let url = url, !cameraID.isEmpty else { return }
+        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted)
     }
 }

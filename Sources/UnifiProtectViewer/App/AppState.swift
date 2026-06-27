@@ -120,6 +120,7 @@ final class AppState: ObservableObject {
         connectionState = .disconnected
         statusMessage = "Disconnected."
         fullscreenCameraID = nil
+        CameraPlayerManager.shared.stopAll()
         broadcastSnapshot()
     }
 

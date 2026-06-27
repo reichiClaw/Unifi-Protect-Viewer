@@ -10,15 +10,26 @@ struct CameraTileView: View {
     var onActivate: (() -> Void)? = nil
 
     @EnvironmentObject private var appState: AppState
-    @State private var status: VLCPlayerView.PlaybackStatus = .idle
+    @ObservedObject private var status: CameraPlaybackStatus
     @State private var hovering = false
+
+    init(camera: ProtectCamera,
+         view: CameraGridConfig?,
+         showName: Bool = true,
+         onActivate: (() -> Void)? = nil) {
+        self.camera = camera
+        self.view = view
+        self.showName = showName
+        self.onActivate = onActivate
+        _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
+    }
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             Color.black
 
             if let url = appState.streamURL(for: camera, in: view) {
-                VLCPlayerView(url: url, status: $status)
+                CameraVideoView(cameraID: camera.id, url: url)
             } else {
                 noStreamPlaceholder
             }
@@ -63,7 +74,7 @@ struct CameraTileView: View {
 
     @ViewBuilder
     private var statusOverlay: some View {
-        switch status {
+        switch status.state {
         case .buffering, .idle:
             ProgressView()
                 .controlSize(.small)
