@@ -1,0 +1,64 @@
+{
+	"SDKVersion": 2,
+	"Author": "UniFi Protect Viewer",
+	"Name": "UniFi Protect Viewer",
+	"Description": "Switch grid views and pop cameras fullscreen in the UniFi Protect Viewer macOS app.",
+	"Version": "1.0.0",
+	"URL": "https://github.com/your-org/Unifi-Protect-Viewer",
+	"Icon": "icons/plugin",
+	"Category": "UniFi Protect",
+	"CategoryIcon": "icons/category",
+	"CodePath": "plugin/index.html",
+	"PropertyInspectorPath": "pi/inspector.html",
+	"OS": [
+		{ "Platform": "mac", "MinimumVersion": "10.15" },
+		{ "Platform": "windows", "MinimumVersion": "10" }
+	],
+	"Software": { "MinimumVersion": "6.0" },
+	"Actions": [
+		{
+			"UUID": "com.unifiprotectviewer.switchview",
+			"Name": "Switch View",
+			"Tooltip": "Switch the viewer to a specific grid view.",
+			"Icon": "icons/switchView",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{ "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" }
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.nextview",
+			"Name": "Next View",
+			"Tooltip": "Switch to the next grid view.",
+			"Icon": "icons/nextView",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.prevview",
+			"Name": "Previous View",
+			"Tooltip": "Switch to the previous grid view.",
+			"Icon": "icons/prevView",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.fullscreen",
+			"Name": "Camera Fullscreen",
+			"Tooltip": "Show a specific camera fullscreen (toggles back to the grid).",
+			"Icon": "icons/fullscreen",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{ "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" }
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.exitfullscreen",
+			"Name": "Exit Fullscreen",
+			"Tooltip": "Return from fullscreen to the grid.",
+			"Icon": "icons/exitFullscreen",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+		}
+	]
+}

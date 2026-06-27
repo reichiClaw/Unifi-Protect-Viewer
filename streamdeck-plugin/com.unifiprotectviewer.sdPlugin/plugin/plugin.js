@@ -1,0 +1,281 @@
+/* global WebSocket, fetch */
+// UniFi Protect Viewer — Stream Deck plugin runtime.
+//
+// Connects to the Stream Deck application (registration socket) and bridges
+// button presses to the viewer app's local control server. Also subscribes to
+// the app's state WebSocket to keep button titles in sync with the active view
+// / fullscreen camera.
+
+let sd = null; // Stream Deck websocket
+let pluginUUID = null;
+
+// context -> { action, settings }
+const buttons = new Map();
+
+// "host:port" -> AppConnection
+const appConnections = new Map();
+
+const ACTIONS = {
+	SWITCH: "com.unifiprotectviewer.switchview",
+	NEXT: "com.unifiprotectviewer.nextview",
+	PREV: "com.unifiprotectviewer.prevview",
+	FULLSCREEN: "com.unifiprotectviewer.fullscreen",
+	EXIT: "com.unifiprotectviewer.exitfullscreen",
+};
+
+function defaults(settings) {
+	return {
+		host: (settings && settings.host) || "127.0.0.1",
+		port: (settings && settings.port) || "8723",
+		token: (settings && settings.token) || "",
+		viewIndex: settings && settings.viewIndex,
+		viewName: settings && settings.viewName,
+		cameraIndex: settings && settings.cameraIndex,
+		cameraName: settings && settings.cameraName,
+	};
+}
+
+function baseURL(s) {
+	return `http://${s.host}:${s.port}`;
+}
+
+// ---------------------------------------------------------------------------
+// Stream Deck registration entry point.
+// ---------------------------------------------------------------------------
+function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, _inInfo) {
+	pluginUUID = inPluginUUID;
+	sd = new WebSocket(`ws://127.0.0.1:${inPort}`);
+
+	sd.onopen = () => {
+		sd.send(JSON.stringify({ event: inRegisterEvent, uuid: inPluginUUID }));
+	};
+
+	sd.onmessage = (evt) => {
+		let msg;
+		try { msg = JSON.parse(evt.data); } catch (e) { return; }
+		handleSDMessage(msg);
+	};
+}
+// Expose globally for Stream Deck.
+window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
+
+function handleSDMessage(msg) {
+	const { event, action, context, payload } = msg;
+	switch (event) {
+		case "willAppear":
+			buttons.set(context, { action, settings: defaults(payload.settings) });
+			ensureAppConnection(buttons.get(context).settings);
+			refreshButton(context);
+			break;
+		case "willDisappear":
+			buttons.delete(context);
+			break;
+		case "didReceiveSettings":
+			buttons.set(context, { action, settings: defaults(payload.settings) });
+			ensureAppConnection(buttons.get(context).settings);
+			refreshButton(context);
+			break;
+		case "keyDown":
+			onKeyDown(action, context, defaults(payload.settings));
+			break;
+		default:
+			break;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Button presses -> app control server.
+// ---------------------------------------------------------------------------
+async function onKeyDown(action, context, s) {
+	let path = null;
+	let body = {};
+	switch (action) {
+		case ACTIONS.SWITCH:
+			path = "/api/select-view";
+			body = identifierForView(s);
+			break;
+		case ACTIONS.NEXT:
+			path = "/api/next-view";
+			break;
+		case ACTIONS.PREV:
+			path = "/api/prev-view";
+			break;
+		case ACTIONS.FULLSCREEN:
+			path = "/api/toggle-fullscreen";
+			body = identifierForCamera(s);
+			break;
+		case ACTIONS.EXIT:
+			path = "/api/exit-fullscreen";
+			break;
+		default:
+			return;
+	}
+	if (s.token) body.token = s.token;
+
+	try {
+		const res = await fetch(baseURL(s) + path, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Auth-Token": s.token || "" },
+			body: JSON.stringify(body),
+		});
+		const data = await res.json().catch(() => ({}));
+		if (res.ok && data.ok !== false) {
+			showOk(context);
+			if (data.snapshot) applySnapshot(s, data.snapshot);
+		} else {
+			showAlert(context);
+		}
+	} catch (e) {
+		showAlert(context);
+	}
+}
+
+function identifierForView(s) {
+	if (s.viewName) return { name: s.viewName };
+	if (s.viewIndex !== undefined && s.viewIndex !== "") return { index: parseInt(s.viewIndex, 10) };
+	return {};
+}
+
+function identifierForCamera(s) {
+	if (s.cameraName) return { name: s.cameraName };
+	if (s.cameraIndex !== undefined && s.cameraIndex !== "") return { index: parseInt(s.cameraIndex, 10) };
+	return {};
+}
+
+// ---------------------------------------------------------------------------
+// App state WebSocket (keeps titles in sync).
+// ---------------------------------------------------------------------------
+function connKey(s) { return `${s.host}:${s.port}`; }
+
+function ensureAppConnection(s) {
+	const key = connKey(s);
+	if (appConnections.has(key)) return;
+	const conn = new AppConnection(s);
+	appConnections.set(key, conn);
+	conn.connect();
+}
+
+class AppConnection {
+	constructor(settings) {
+		this.settings = settings;
+		this.ws = null;
+		this.snapshot = null;
+		this.reconnectTimer = null;
+	}
+	connect() {
+		const url = `ws://${this.settings.host}:${this.settings.port}/ws`;
+		try {
+			this.ws = new WebSocket(url);
+		} catch (e) {
+			this.scheduleReconnect();
+			return;
+		}
+		this.ws.onmessage = (evt) => {
+			try {
+				const snap = JSON.parse(evt.data);
+				this.snapshot = snap;
+				broadcastSnapshot(connKey(this.settings), snap);
+			} catch (e) { /* ignore */ }
+		};
+		this.ws.onclose = () => this.scheduleReconnect();
+		this.ws.onerror = () => { try { this.ws.close(); } catch (e) {} };
+	}
+	scheduleReconnect() {
+		if (this.reconnectTimer) return;
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = null;
+			this.connect();
+		}, 3000);
+	}
+}
+
+function broadcastSnapshot(key, snapshot) {
+	for (const [context, info] of buttons) {
+		if (connKey(info.settings) === key) {
+			applySnapshotToButton(context, info, snapshot);
+		}
+	}
+}
+
+function applySnapshot(settings, snapshot) {
+	const conn = appConnections.get(connKey(settings));
+	if (conn) conn.snapshot = snapshot;
+	broadcastSnapshot(connKey(settings), snapshot);
+}
+
+// ---------------------------------------------------------------------------
+// Title / state rendering.
+// ---------------------------------------------------------------------------
+function refreshButton(context) {
+	const info = buttons.get(context);
+	if (!info) return;
+	const conn = appConnections.get(connKey(info.settings));
+	const snap = conn ? conn.snapshot : null;
+	applySnapshotToButton(context, info, snap);
+}
+
+function applySnapshotToButton(context, info, snapshot) {
+	const s = info.settings;
+	let title = "";
+	let active = false;
+
+	switch (info.action) {
+		case ACTIONS.SWITCH: {
+			title = s.viewName || (s.viewIndex !== undefined ? `View ${s.viewIndex}` : "View");
+			if (snapshot) {
+				active = matchView(snapshot, s);
+				if (snapshot.views && s.viewIndex !== undefined && !s.viewName) {
+					const v = snapshot.views[parseInt(s.viewIndex, 10)];
+					if (v) title = v.name;
+				}
+			}
+			break;
+		}
+		case ACTIONS.FULLSCREEN: {
+			title = s.cameraName || (s.cameraIndex !== undefined ? `Cam ${s.cameraIndex}` : "Camera");
+			if (snapshot) active = matchCamera(snapshot, s);
+			break;
+		}
+		case ACTIONS.NEXT: title = snapshot && snapshot.currentViewName ? `▶ ${snapshot.currentViewName}` : "Next"; break;
+		case ACTIONS.PREV: title = "Prev"; break;
+		case ACTIONS.EXIT: title = "Grid"; break;
+		default: break;
+	}
+
+	if (active) title = `● ${title}`;
+	setTitle(context, title);
+}
+
+function matchView(snapshot, s) {
+	if (s.viewName && snapshot.currentViewName) {
+		return s.viewName.toLowerCase() === snapshot.currentViewName.toLowerCase();
+	}
+	if (s.viewIndex !== undefined && s.viewIndex !== "") {
+		return parseInt(s.viewIndex, 10) === snapshot.currentViewIndex;
+	}
+	return false;
+}
+
+function matchCamera(snapshot, s) {
+	if (!snapshot.fullscreenCameraID && !snapshot.fullscreenCameraName) return false;
+	if (s.cameraName && snapshot.fullscreenCameraName) {
+		return s.cameraName.toLowerCase() === snapshot.fullscreenCameraName.toLowerCase();
+	}
+	if (s.cameraIndex !== undefined && s.cameraIndex !== "" && snapshot.cameras) {
+		const cam = snapshot.cameras[parseInt(s.cameraIndex, 10)];
+		return cam && cam.id === snapshot.fullscreenCameraID;
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------------
+// Stream Deck send helpers.
+// ---------------------------------------------------------------------------
+function setTitle(context, title) {
+	send({ event: "setTitle", context, payload: { title: title || "", target: 0 } });
+}
+function showOk(context) { send({ event: "showOk", context }); }
+function showAlert(context) { send({ event: "showAlert", context }); }
+function send(obj) {
+	if (sd && sd.readyState === 1) sd.send(JSON.stringify(obj));
+}

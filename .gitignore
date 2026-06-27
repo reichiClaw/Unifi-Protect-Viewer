@@ -1,0 +1,19 @@
+# Xcode / macOS
+.DS_Store
+*.xcodeproj
+*.xcworkspace
+xcuserdata/
+DerivedData/
+build/
+*.swiftpm
+.swiftpm/
+
+# Swift Package Manager
+.build/
+Package.resolved
+
+# Stream Deck generated icons (regenerate with generate-placeholder-icons.sh)
+streamdeck-plugin/com.unifiprotectviewer.sdPlugin/icons/*.png
+
+# Misc
+*.log

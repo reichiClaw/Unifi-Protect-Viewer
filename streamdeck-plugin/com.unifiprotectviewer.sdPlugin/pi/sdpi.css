@@ -1,0 +1,67 @@
+/* Minimal Stream Deck property-inspector styling. */
+:root {
+	--bg: #2d2d2d;
+	--fg: #d8d8d8;
+	--muted: #969696;
+	--input-bg: #3d3d3d;
+	--accent: #0a84ff;
+}
+* { box-sizing: border-box; }
+html, body {
+	margin: 0;
+	padding: 0;
+	background: var(--bg);
+	color: var(--fg);
+	font-family: -apple-system, "Segoe UI", sans-serif;
+	font-size: 12px;
+}
+.sdpi-wrapper { padding: 10px 12px; max-width: 420px; }
+.sdpi-item {
+	display: flex;
+	align-items: center;
+	margin-bottom: 8px;
+}
+.sdpi-item-label {
+	flex: 0 0 90px;
+	text-align: right;
+	padding-right: 10px;
+	color: var(--muted);
+}
+.sdpi-item-value {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+input.sdpi-item-value,
+select.sdpi-item-value {
+	background: var(--input-bg);
+	color: var(--fg);
+	border: 1px solid #1f1f1f;
+	border-radius: 4px;
+	padding: 5px 7px;
+	outline: none;
+}
+input.sdpi-item-value:focus,
+select.sdpi-item-value:focus { border-color: var(--accent); }
+button.sdpi-item-value {
+	background: var(--input-bg);
+	color: var(--fg);
+	border: 1px solid #1f1f1f;
+	border-radius: 4px;
+	padding: 6px 10px;
+	cursor: pointer;
+}
+button.sdpi-item-value:hover { background: #4a4a4a; }
+.group {
+	border-top: 1px solid #1f1f1f;
+	padding-top: 8px;
+	margin-top: 4px;
+}
+.message {
+	color: var(--muted);
+	margin-bottom: 10px;
+}
+.status {
+	color: var(--muted);
+	margin-top: 8px;
+	min-height: 14px;
+}
