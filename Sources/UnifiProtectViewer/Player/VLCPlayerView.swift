@@ -40,6 +40,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         weak var hostedIn: NSView?
         var caching = 300
         var muted = true
+        // Stall detection: track playback-time progress.
+        var lastTimeMs = -1
+        var stalledChecks = 0
         init(id: String) {
             self.id = id
             controlQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.\(id)")
@@ -50,6 +53,38 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Keep a stopped stream's player around (warm) for this long after it goes
     /// off-screen, so flipping back to it resumes instantly.
     private let graceSeconds: TimeInterval = 8
+    private var watchdog: Timer?
+    /// How many consecutive watchdog ticks (5s each) with no playback progress
+    /// before we treat a stream as stalled and restart it.
+    private let stallTickThreshold = 2
+
+    override init() {
+        super.init()
+        // Periodically check on-screen streams for silent stalls (VLC stays in
+        // the "playing" state but stops receiving frames) and restart them.
+        watchdog = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
+            self?.checkForStalls()
+        }
+    }
+
+    private func checkForStalls() {
+        for e in entries.values where e.hostedIn != nil {
+            guard e.player.state == .playing else { e.lastTimeMs = -1; e.stalledChecks = 0; continue }
+            let t = Int(e.player.time?.intValue ?? 0)
+            if t > 0 && t == e.lastTimeMs {
+                e.stalledChecks += 1
+                if e.stalledChecks >= stallTickThreshold {
+                    appLog("Player[\(e.id)]: stalled (no progress ~\(stallTickThreshold * 5)s) — restarting", .warn)
+                    e.lastTimeMs = -1
+                    e.stalledChecks = 0
+                    start(e)
+                }
+            } else {
+                e.lastTimeMs = t
+                e.stalledChecks = 0
+            }
+        }
+    }
 
     // MARK: Public API (all called on the main thread)
 
@@ -127,6 +162,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func start(_ e: Entry) {
         guard let url = e.activeURL else { return }
         setStatus(e, .buffering)
+        e.lastTimeMs = -1
+        e.stalledChecks = 0
         let caching = e.caching
         let muted = e.muted
         appLog("Player[\(e.id)]: start \(url.absoluteString)", .debug)
