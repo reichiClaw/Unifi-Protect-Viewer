@@ -38,6 +38,9 @@ to switch between views and pop individual cameras fullscreen.
 
 ## Building the macOS app
 
+> For a step-by-step walkthrough (prerequisites, signing, troubleshooting), see
+> **[docs/BUILDING.md](docs/BUILDING.md)**. Quick version below.
+
 ### Requirements
 
 - macOS 13 (Ventura) or later
