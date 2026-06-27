@@ -29,7 +29,9 @@ struct CameraTileView: View {
             Color.black
 
             if let url = appState.streamURL(for: camera, in: view) {
-                CameraVideoView(cameraID: camera.id, url: url)
+                CameraVideoView(cameraID: camera.id,
+                                url: url,
+                                caching: appState.config.connection.streamCacheMs)
             } else {
                 noStreamPlaceholder
             }

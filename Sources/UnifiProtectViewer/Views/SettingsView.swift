@@ -25,6 +25,7 @@ private struct ConnectionSettingsTab: View {
     @State private var autoEnableRTSP: Bool = true
     @State private var quality: StreamQuality = .high
     @State private var mfaCode: String = ""
+    @State private var cacheMs: Double = 1500
 
     var body: some View {
         Form {
@@ -47,10 +48,14 @@ private struct ConnectionSettingsTab: View {
                 }
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
                 Toggle("Auto-enable RTSP on cameras", isOn: $autoEnableRTSP)
+                VStack(alignment: .leading) {
+                    Text("Buffer: \(Int(cacheMs)) ms")
+                    Slider(value: $cacheMs, in: 300...5000, step: 100)
+                }
             } header: {
                 Text("Streaming")
             } footer: {
-                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). For many cameras at once, choose **Low** or **Medium** quality to reduce CPU/bandwidth; you can override quality per view.")
+                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). For many cameras at once, choose **Low** or **Medium** quality to reduce CPU/bandwidth. A larger **Buffer** adds latency but makes playback much more resilient on a 24/7 wall (≈1500–2500 ms recommended).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -90,6 +95,7 @@ private struct ConnectionSettingsTab: View {
         useRTSPS = c.useRTSPS
         autoEnableRTSP = c.autoEnableRTSP
         quality = c.defaultQuality
+        cacheMs = Double(c.streamCacheMs)
         password = appState.storedPassword ?? ""
     }
 
@@ -100,6 +106,7 @@ private struct ConnectionSettingsTab: View {
         c.useRTSPS = useRTSPS
         c.autoEnableRTSP = autoEnableRTSP
         c.defaultQuality = quality
+        c.streamCacheMs = Int(cacheMs)
         return c
     }
 

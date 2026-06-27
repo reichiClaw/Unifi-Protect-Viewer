@@ -16,6 +16,23 @@ struct ConnectionSettings: Codable, Equatable {
     var defaultQuality: StreamQuality = .high
     /// Automatically enable RTSP on cameras that have it disabled.
     var autoEnableRTSP: Bool = true
+    /// Network/jitter buffer in milliseconds. Higher = more latency but more
+    /// resilient to network hiccups (recommended for a 24/7 wall).
+    var streamCacheMs: Int = 1500
+
+    init() {}
+
+    /// Resilient decoding so adding fields never invalidates an existing
+    /// saved configuration (missing keys fall back to defaults).
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        useRTSPS = try c.decodeIfPresent(Bool.self, forKey: .useRTSPS) ?? false
+        defaultQuality = try c.decodeIfPresent(StreamQuality.self, forKey: .defaultQuality) ?? .high
+        autoEnableRTSP = try c.decodeIfPresent(Bool.self, forKey: .autoEnableRTSP) ?? true
+        streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
+    }
 
     var isComplete: Bool {
         !host.trimmingCharacters(in: .whitespaces).isEmpty &&

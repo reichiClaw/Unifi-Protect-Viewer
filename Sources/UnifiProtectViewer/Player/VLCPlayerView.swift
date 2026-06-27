@@ -27,7 +27,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     private final class Entry {
         let id: String
-        let player = VLCMediaPlayer()
+        var player = VLCMediaPlayer()
         let surface = NSView()
         let status = CameraPlaybackStatus()
         let controlQueue: DispatchQueue
@@ -38,11 +38,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var retryWork: DispatchWorkItem?
         var stopWork: DispatchWorkItem?
         weak var hostedIn: NSView?
-        var caching = 300
+        var caching = 1500
         var muted = true
-        // Stall detection: track playback-time progress.
+        // Health tracking for the watchdog.
         var lastTimeMs = -1
-        var stalledChecks = 0
+        var unhealthyTicks = 0
+        var softRestarts = 0
         init(id: String) {
             self.id = id
             controlQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.\(id)")
@@ -52,37 +53,68 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private var entries: [String: Entry] = [:]
     /// Keep a stopped stream's player around (warm) for this long after it goes
     /// off-screen, so flipping back to it resumes instantly.
-    private let graceSeconds: TimeInterval = 8
+    private let graceSeconds: TimeInterval = 10
     private var watchdog: Timer?
-    /// How many consecutive watchdog ticks (5s each) with no playback progress
-    /// before we treat a stream as stalled and restart it.
-    private let stallTickThreshold = 2
+    private let watchdogInterval: TimeInterval = 4
+    /// Consecutive watchdog ticks without healthy progress before recovering.
+    private let unhealthyThreshold = 3
+    /// After this many soft restarts that don't recover, recreate the player.
+    private let maxSoftRestarts = 3
 
     override init() {
         super.init()
-        // Periodically check on-screen streams for silent stalls (VLC stays in
-        // the "playing" state but stops receiving frames) and restart them.
-        watchdog = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
-            self?.checkForStalls()
+        // Periodically verify every on-screen stream is actually making
+        // progress, and escalate recovery if not. This is the core of the
+        // "bulletproof over long runtime" behaviour.
+        let timer = Timer(timeInterval: watchdogInterval, repeats: true) { [weak self] _ in
+            self?.checkHealth()
+        }
+        // .common so the watchdog keeps firing during menu tracking / live resize.
+        RunLoop.main.add(timer, forMode: .common)
+        watchdog = timer
+    }
+
+    /// Returns true if the on-screen stream is healthy (playing and advancing).
+    private func isHealthy(_ e: Entry) -> Bool {
+        switch e.player.state {
+        case .playing, .esAdded:
+            let t = Int(e.player.time?.intValue ?? 0)
+            if t <= 0 { e.lastTimeMs = t; return true } // just starting
+            if t != e.lastTimeMs { e.lastTimeMs = t; return true }
+            return false // time frozen → stalled
+        default:
+            return false // opening/buffering/error/stopped/ended while on-screen
         }
     }
 
-    private func checkForStalls() {
+    private func checkHealth() {
         for e in entries.values where e.hostedIn != nil {
-            guard e.player.state == .playing else { e.lastTimeMs = -1; e.stalledChecks = 0; continue }
-            let t = Int(e.player.time?.intValue ?? 0)
-            if t > 0 && t == e.lastTimeMs {
-                e.stalledChecks += 1
-                if e.stalledChecks >= stallTickThreshold {
-                    appLog("Player[\(e.id)]: stalled (no progress ~\(stallTickThreshold * 5)s) — restarting", .warn)
-                    e.lastTimeMs = -1
-                    e.stalledChecks = 0
-                    start(e)
-                }
+            if isHealthy(e) {
+                e.unhealthyTicks = 0
+                e.softRestarts = 0
             } else {
-                e.lastTimeMs = t
-                e.stalledChecks = 0
+                e.unhealthyTicks += 1
+                if e.unhealthyTicks >= unhealthyThreshold {
+                    recover(e)
+                }
             }
+        }
+    }
+
+    /// Escalating recovery: clean stop→restart a few times, then recreate the
+    /// underlying player if it stays wedged.
+    private func recover(_ e: Entry) {
+        e.unhealthyTicks = 0
+        e.lastTimeMs = -1
+        e.retryWork?.cancel(); e.retryWork = nil
+        if e.softRestarts < maxSoftRestarts {
+            e.softRestarts += 1
+            appLog("Player[\(e.id)]: unhealthy — restart \(e.softRestarts)/\(maxSoftRestarts)", .warn)
+            restart(e)
+        } else {
+            e.softRestarts = 0
+            appLog("Player[\(e.id)]: still wedged — recreating player", .error)
+            recreatePlayer(e)
         }
     }
 
@@ -159,11 +191,23 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         return e
     }
 
+    private func makeMedia(url: URL, caching: Int, muted: Bool) -> VLCMedia {
+        let media = VLCMedia(url: url)
+        // Trade a little latency for resilience over long runtimes.
+        media.addOption(":network-caching=\(caching)")
+        media.addOption(":live-caching=\(caching)")
+        media.addOption(":rtsp-tcp")                       // TCP is far more reliable than UDP
+        media.addOption(":rtsp-frame-buffer-size=1000000")
+        media.addOption(":no-audio") // grid/wall: video only (lower load, fewer stalls)
+        _ = muted
+        return media
+    }
+
     private func start(_ e: Entry) {
         guard let url = e.activeURL else { return }
         setStatus(e, .buffering)
         e.lastTimeMs = -1
-        e.stalledChecks = 0
+        e.unhealthyTicks = 0
         let caching = e.caching
         let muted = e.muted
         appLog("Player[\(e.id)]: start \(url.absoluteString)", .debug)
@@ -171,15 +215,52 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         // stop), but drive the actual playback on the MAIN thread — VLCKit's
         // video output/presentation on macOS must be started from the main run
         // loop, otherwise it decodes a single frame and freezes (a "still").
-        e.controlQueue.async {
-            let media = VLCMedia(url: url)
-            media.addOption(":network-caching=\(caching)")
-            media.addOption(":rtsp-tcp")
-            media.addOption(":rtsp-frame-buffer-size=500000")
-            if muted { media.addOption(":no-audio") }
+        e.controlQueue.async { [weak self] in
+            let media = self?.makeMedia(url: url, caching: caching, muted: muted) ?? VLCMedia(url: url)
             DispatchQueue.main.sync {
                 e.player.media = media
                 e.player.play()
+            }
+        }
+    }
+
+    /// Clean stop → restart, serialized so the two never overlap.
+    private func restart(_ e: Entry) {
+        guard let url = e.activeURL else { return }
+        setStatus(e, .buffering)
+        e.lastTimeMs = -1
+        let caching = e.caching
+        let muted = e.muted
+        e.controlQueue.async { [weak self] in
+            e.player.stop()
+            let media = self?.makeMedia(url: url, caching: caching, muted: muted) ?? VLCMedia(url: url)
+            DispatchQueue.main.sync {
+                e.player.media = media
+                e.player.play()
+            }
+        }
+    }
+
+    /// Nuclear option: replace a wedged player with a fresh one (reusing the
+    /// same on-screen surface) so a single bad player can't stay broken.
+    private func recreatePlayer(_ e: Entry) {
+        guard let url = e.activeURL else { return }
+        setStatus(e, .buffering)
+        e.lastTimeMs = -1
+        let old = e.player
+        let fresh = VLCMediaPlayer()
+        fresh.drawable = e.surface
+        fresh.delegate = self
+        e.player = fresh
+        let caching = e.caching
+        let muted = e.muted
+        e.controlQueue.async { [weak self] in
+            old.delegate = nil
+            old.stop()
+            let media = self?.makeMedia(url: url, caching: caching, muted: muted) ?? VLCMedia(url: url)
+            DispatchQueue.main.sync {
+                fresh.media = media
+                fresh.play()
             }
         }
     }
@@ -274,7 +355,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 struct CameraVideoView: NSViewRepresentable {
     let cameraID: String
     let url: URL
-    var caching: Int = 300
+    var caching: Int = 1500
     var muted: Bool = true
 
     func makeNSView(context: Context) -> HostView {
