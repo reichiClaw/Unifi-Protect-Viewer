@@ -156,6 +156,8 @@ See the main [README](../README.md) for using views/fullscreen and
 | Login fails | Use a **local** Protect account; verify host/IP is reachable and uses the UniFi OS console address. |
 | App won't open (Gatekeeper) on another Mac | For local dev, right-click → Open. For distribution you must codesign/notarize. |
 | Self-signed cert errors | Expected for UniFi controllers; trust is pinned to your configured host automatically. |
+| Tiles error immediately with `rtsps://…:7441` URLs | RTSPS (TLS) isn't supported by the video engine against UniFi's self-signed cert. Turn **off** "Use RTSPS" in Settings (plain RTSP on 7447). The app also auto-falls back to RTSP on failure. |
+| Very high CPU / choppy video with many cameras | Each tile decodes a live stream; 4K×many is heavy. Set default quality (or a per-view quality) to **Low**/**Medium**. |
 | Crash on launch referencing VLCKit | Reset package caches; ensure the VLCKit (vlckit-spm) package finished downloading. |
 
 ## Notes on distribution

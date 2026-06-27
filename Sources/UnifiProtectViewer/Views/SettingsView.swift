@@ -41,12 +41,18 @@ private struct ConnectionSettingsTab: View {
                     .foregroundColor(.secondary)
             }
 
-            Section("Streaming") {
+            Section {
                 Picker("Default quality", selection: $quality) {
                     ForEach(StreamQuality.allCases) { q in Text(q.label).tag(q) }
                 }
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
                 Toggle("Auto-enable RTSP on cameras", isOn: $autoEnableRTSP)
+            } header: {
+                Text("Streaming")
+            } footer: {
+                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). For many cameras at once, choose **Low** or **Medium** quality to reduce CPU/bandwidth; you can override quality per view.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             }
 
             Section {
