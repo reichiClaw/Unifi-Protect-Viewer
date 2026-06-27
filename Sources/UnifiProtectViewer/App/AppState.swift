@@ -76,11 +76,13 @@ final class AppState: ObservableObject {
         statusMessage = "Connecting to \(config.connection.host)…"
         let connection = config.connection
         let mfa = mfaCode
+        appLog("Connecting to \(connection.host) as \(connection.username) (rtsps=\(connection.useRTSPS), quality=\(connection.defaultQuality.rawValue))")
 
         Task {
             do {
                 await apiClient.configure(host: connection.host)
                 try await apiClient.login(username: connection.username, password: password, mfaToken: mfa)
+                appLog("Login succeeded; fetching bootstrap…")
                 var bootstrap = try await apiClient.fetchBootstrap()
 
                 if connection.autoEnableRTSP {
@@ -99,12 +101,15 @@ final class AppState: ObservableObject {
                     self.connectionState = .connected
                     self.statusMessage = "Connected — \(loaded.count) camera\(loaded.count == 1 ? "" : "s")."
                     self.mfaCode = ""
+                    self.logCameraStreams(loaded)
                     self.broadcastSnapshot()
                 }
             } catch {
                 await MainActor.run {
+                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
                     self.connectionState = .error
-                    self.statusMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                    self.statusMessage = message
+                    appLog("Connection failed: \(message)", .error)
                     self.broadcastSnapshot()
                 }
             }
@@ -141,6 +146,20 @@ final class AppState: ObservableObject {
     private func setStatus(_ message: String, state: ConnectionState) {
         statusMessage = message
         connectionState = state
+    }
+
+    /// Log each camera's RTSP channels and the resolved stream URL — the most
+    /// useful information for diagnosing "black tile" / no-video problems.
+    private func logCameraStreams(_ loaded: [ProtectCamera]) {
+        appLog("Loaded \(loaded.count) cameras.")
+        for cam in loaded {
+            let channels = cam.channels
+                .map { "ch\($0.id)[\($0.width ?? 0)x\($0.height ?? 0) rtsp=\($0.isRtspEnabled ?? false) alias=\($0.rtspAlias ?? "nil")]" }
+                .joined(separator: ", ")
+            let url = streamURL(for: cam, in: currentView)?.absoluteString ?? "nil"
+            let level: AppLog.Level = (url == "nil") ? .warn : .info
+            appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(url) | \(channels)", level)
+        }
     }
 
     // MARK: - Cameras

@@ -1,0 +1,109 @@
+import Foundation
+import Combine
+
+/// Lightweight app-wide logger that keeps recent entries in memory (for the
+/// in-app log viewer) and appends everything to a file on disk.
+///
+/// Thread-safe: `log(_:level:)` may be called from any thread/actor. File
+/// writes happen on a serial queue; the published `entries` array is updated on
+/// the main thread for SwiftUI.
+final class AppLog: ObservableObject {
+    static let shared = AppLog()
+
+    enum Level: String, CaseIterable {
+        case debug = "DEBUG"
+        case info = "INFO"
+        case warn = "WARN"
+        case error = "ERROR"
+
+        var rank: Int {
+            switch self {
+            case .debug: return 0
+            case .info: return 1
+            case .warn: return 2
+            case .error: return 3
+            }
+        }
+    }
+
+    struct Entry: Identifiable {
+        let id = UUID()
+        let date: Date
+        let level: Level
+        let message: String
+
+        func formatted(_ formatter: DateFormatter) -> String {
+            "\(formatter.string(from: date)) [\(level.rawValue)] \(message)"
+        }
+    }
+
+    @Published private(set) var entries: [Entry] = []
+
+    let fileURL: URL
+    private let queue = DispatchQueue(label: "com.unifiprotectviewer.applog")
+    private let maxEntries = 5000
+    private let formatter: DateFormatter
+
+    private init() {
+        let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = base.appendingPathComponent("UnifiProtectViewer", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        fileURL = dir.appendingPathComponent("app.log")
+
+        formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
+
+        // Start each launch with a session marker (and cap file growth).
+        queue.async { [fileURL, formatter] in
+            // If the file is very large (>2 MB), truncate it.
+            if let size = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
+               size > 2_000_000 {
+                try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+            }
+            let header = "\n===== UniFi Protect Viewer launched \(formatter.string(from: Date())) =====\n"
+            AppLog.append(header, to: fileURL)
+        }
+    }
+
+    func log(_ message: String, level: Level = .info) {
+        let entry = Entry(date: Date(), level: level, message: message)
+        let line = entry.formatted(formatter) + "\n"
+        queue.async { [fileURL] in
+            AppLog.append(line, to: fileURL)
+        }
+        DispatchQueue.main.async {
+            self.entries.append(entry)
+            if self.entries.count > self.maxEntries {
+                self.entries.removeFirst(self.entries.count - self.maxEntries)
+            }
+        }
+        // Also mirror to the system log / Xcode console.
+        NSLog("[%@] %@", level.rawValue, message)
+    }
+
+    func clear() {
+        DispatchQueue.main.async { self.entries.removeAll() }
+        queue.async { [fileURL] in try? "".write(to: fileURL, atomically: true, encoding: .utf8) }
+    }
+
+    /// All in-memory entries joined into a single string (for copy/share).
+    func exportText() -> String {
+        entries.map { $0.formatted(formatter) }.joined(separator: "\n")
+    }
+
+    private static func append(_ string: String, to url: URL) {
+        guard let data = string.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+}
+
+/// Global convenience for logging from anywhere.
+func appLog(_ message: String, _ level: AppLog.Level = .info) {
+    AppLog.shared.log(message, level: level)
+}

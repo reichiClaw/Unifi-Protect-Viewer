@@ -25,11 +25,32 @@ struct UnifiProtectViewerApp: App {
                 }
                 .keyboardShortcut("r", modifiers: [.command])
             }
+            LogCommands()
         }
 
         Settings {
             SettingsView()
                 .environmentObject(appState)
+        }
+
+        Window("Log", id: LogWindow.id) {
+            LogView()
+        }
+    }
+}
+
+enum LogWindow {
+    static let id = "log"
+}
+
+/// Adds a "View → Show Log" menu command that opens the Log window.
+struct LogCommands: Commands {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(after: .toolbar) {
+            Button("Show Log") { openWindow(id: LogWindow.id) }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
         }
     }
 }

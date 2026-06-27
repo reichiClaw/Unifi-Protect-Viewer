@@ -121,7 +121,7 @@ actor ProtectAPIClient {
 
         guard (200...299).contains(http.statusCode) else {
             let bodyText = (String(data: data, encoding: .utf8) ?? "")
-            NSLog("ProtectAPIClient: login failed HTTP \(http.statusCode): \(bodyText)")
+            appLog("Login failed HTTP \(http.statusCode): \(bodyText)", .error)
             let lower = bodyText.lowercased()
             if http.statusCode == 401 || http.statusCode == 499 {
                 if lower.contains("2fa") || lower.contains("mfa") || lower.contains("two") || lower.contains("otp") {
@@ -252,7 +252,7 @@ actor ProtectAPIClient {
             return data
         case 401, 403:
             let bodyText = String(data: data, encoding: .utf8) ?? ""
-            NSLog("ProtectAPIClient: \(method) \(path) failed HTTP \(http.statusCode): \(bodyText)")
+            appLog("\(method) \(path) failed HTTP \(http.statusCode): \(bodyText)", .error)
             if method != "GET" { throw ProtectAPIError.insufficientPermissions }
             throw ProtectAPIError.authenticationFailed(http.statusCode)
         default:

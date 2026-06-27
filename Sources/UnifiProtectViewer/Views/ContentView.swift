@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
+    @Environment(\.openWindow) private var openWindow
     @State private var showingSettings = false
     @State private var editingView: CameraGridConfig?
 
@@ -82,6 +83,12 @@ struct ContentView: View {
                     }
                     .help("Edit current view")
                 }
+                Button {
+                    openWindow(id: LogWindow.id)
+                } label: {
+                    Image(systemName: "doc.text.magnifyingglass")
+                }
+                .help("Show log")
                 Button {
                     showingSettings = true
                 } label: {

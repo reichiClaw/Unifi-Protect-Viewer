@@ -47,10 +47,10 @@ final class ControlServer {
         do {
             try server.start(port, forceIPv4: true)
             isRunning = true
-            NSLog("ControlServer: listening on port \(port)")
+            appLog("ControlServer: listening on port \(port)")
         } catch {
             isRunning = false
-            NSLog("ControlServer: failed to start on port \(port): \(error)")
+            appLog("ControlServer: failed to start on port \(port): \(error)", .error)
         }
     }
 

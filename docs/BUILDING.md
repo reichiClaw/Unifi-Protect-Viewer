@@ -145,6 +145,7 @@ See the main [README](../README.md) for using views/fullscreen and
 | `xcodegen: command not found` | `brew install xcodegen` |
 | Package resolution hangs / fails | File → Packages → Reset Package Caches, then Resolve again. Check network access to GitHub. |
 | Tiles show “Stream error — retrying…” | Enable RTSP for the camera in UniFi Protect (*Camera → Settings → Advanced → RTSP*), or enable “Auto-enable RTSP” in Settings with an admin account. |
+| Black tiles / no video, or anything else misbehaving | Open the log: menu **View → Show Log** (⌘⇧L) or the log button in the sidebar. It records the resolved RTSP URLs and each player's state (PLAYING/ERROR/retry). Use **Reveal File** to open `~/Library/Application Support/UnifiProtectViewer/app.log`. |
 | Login fails | Use a **local** Protect account; verify host/IP is reachable and uses the UniFi OS console address. |
 | App won't open (Gatekeeper) on another Mac | For local dev, right-click → Open. For distribution you must codesign/notarize. |
 | Self-signed cert errors | Expected for UniFi controllers; trust is pinned to your configured host automatically. |

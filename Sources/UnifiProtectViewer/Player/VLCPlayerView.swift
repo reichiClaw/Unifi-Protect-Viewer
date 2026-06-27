@@ -24,11 +24,10 @@ struct VLCPlayerView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> PlayerContainerView {
         let container = PlayerContainerView()
-        container.wantsLayer = true
-        container.layer?.backgroundColor = NSColor.black.cgColor
-        container.autoresizesSubviews = true
         let coordinator = context.coordinator
-        coordinator.attach(to: container)
+        // VLC draws into a dedicated, autoresizing subview to avoid layer /
+        // background conflicts that can cause a black image.
+        coordinator.attach(to: container.videoView)
         // Start playback only once the view is in a window and has a real
         // surface — starting in makeNSView (zero frame, no window) yields a
         // black image with VLCKit on macOS.
@@ -59,6 +58,10 @@ struct VLCPlayerView: NSViewRepresentable {
         private var retryCount = 0
         private let statusBinding: Binding<PlaybackStatus>
 
+        private weak var drawableView: NSView?
+        private var lastCachingMs = 300
+        private var lastMuted = true
+
         init(status: Binding<PlaybackStatus>) {
             self.statusBinding = status
             super.init()
@@ -66,6 +69,7 @@ struct VLCPlayerView: NSViewRepresentable {
         }
 
         func attach(to view: NSView) {
+            drawableView = view
             player.drawable = view
         }
 
@@ -74,7 +78,10 @@ struct VLCPlayerView: NSViewRepresentable {
             // updates would interrupt a live stream while it buffers.
             if currentURL == url { return }
             currentURL = url
+            lastCachingMs = networkCaching
+            lastMuted = muted
             retryCount = 0
+            appLog("Player: start \(url.absoluteString)")
             startPlayback(networkCaching: networkCaching, muted: muted)
         }
 
@@ -108,7 +115,8 @@ struct VLCPlayerView: NSViewRepresentable {
             let delay = min(pow(2.0, Double(retryCount - 1)), 10.0)
             let work = DispatchWorkItem { [weak self] in
                 guard let self = self else { return }
-                self.startPlayback(networkCaching: 300, muted: true)
+                appLog("Player: retry #\(self.retryCount) \(self.currentURL?.absoluteString ?? "")", .warn)
+                self.startPlayback(networkCaching: self.lastCachingMs, muted: self.lastMuted)
             }
             retryWorkItem = work
             DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
@@ -125,18 +133,24 @@ struct VLCPlayerView: NSViewRepresentable {
         // MARK: VLCMediaPlayerDelegate
 
         func mediaPlayerStateChanged(_ aNotification: Notification) {
+            let url = currentURL?.absoluteString ?? ""
             switch player.state {
             case .playing:
                 retryCount = 0
+                let size = drawableView?.bounds.size ?? .zero
+                appLog("Player: PLAYING \(url) (view \(Int(size.width))x\(Int(size.height)))")
                 updateStatus(.playing)
             case .buffering, .opening:
+                appLog("Player: \(stateName) \(url)", .debug)
                 updateStatus(.buffering)
             case .error:
+                appLog("Player: ERROR \(url)", .error)
                 updateStatus(.error)
                 scheduleRetry()
             case .ended, .stopped:
                 // Live streams should not "end"; treat as a drop and retry.
                 if currentURL != nil {
+                    appLog("Player: \(stateName) \(url) — will retry", .warn)
                     updateStatus(.buffering)
                     scheduleRetry()
                 }
@@ -144,13 +158,45 @@ struct VLCPlayerView: NSViewRepresentable {
                 break
             }
         }
+
+        private var stateName: String {
+            switch player.state {
+            case .stopped: return "STOPPED"
+            case .opening: return "OPENING"
+            case .buffering: return "BUFFERING"
+            case .ended: return "ENDED"
+            case .error: return "ERROR"
+            case .playing: return "PLAYING"
+            case .paused: return "PAUSED"
+            default: return "STATE(\(player.state.rawValue))"
+            }
+        }
     }
 }
 
-/// NSView that notifies when it becomes part of a window, so VLCKit playback
-/// can start against a valid drawing surface.
+/// NSView that hosts VLCKit's video output in a dedicated subview and notifies
+/// when it becomes part of a window, so playback can start against a valid
+/// drawing surface.
 final class PlayerContainerView: NSView {
+    /// The view VLC renders into. Tracks the container's bounds.
+    let videoView = NSView()
     var onMoveToWindow: (() -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        autoresizesSubviews = true
+        videoView.wantsLayer = true
+        videoView.translatesAutoresizingMaskIntoConstraints = true
+        videoView.autoresizingMask = [.width, .height]
+        videoView.frame = bounds
+        addSubview(videoView)
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
