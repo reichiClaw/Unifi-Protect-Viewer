@@ -34,12 +34,13 @@ final class ControlServer {
     }
 
     func start(port: UInt16, token: String) {
-        guard !isRunning else {
-            if port != self.port || token != self.token {
-                stop()
-            } else {
+        if isRunning {
+            // Already running with the same configuration: nothing to do.
+            if port == self.port && token == self.token {
                 return
             }
+            // Configuration changed: stop and restart below.
+            stop()
         }
         self.port = port
         self.token = token
