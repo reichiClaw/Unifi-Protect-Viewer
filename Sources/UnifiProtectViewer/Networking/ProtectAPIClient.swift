@@ -19,7 +19,7 @@ enum ProtectAPIError: LocalizedError {
             return "Login failed (HTTP 401): invalid credentials. Use a LOCAL UniFi Protect account — not your Ubiquiti cloud (account.ui.com) login. In UniFi Protect go to Settings → Admins & Users → Add, create a user with a local username/password and grant it access to Protect. If that account has two-factor authentication enabled, enter a current 2FA code in Settings, or disable 2FA for it."
         case .twoFactorRequired:
             return "This account requires two-factor authentication. Enter a current 2FA code in Settings → Connection and connect again."
-        case .authenticationFailed(let code): return "Login failed (HTTP \(code))."
+        case .authenticationFailed(let code): return "The controller rejected the request (HTTP \(code)). The session may have expired, or this account may not have access to UniFi Protect. Check Console → Logs for details."
         case .requestFailed(let code): return "The controller returned an error (HTTP \(code))."
         case .decodingFailed(let detail): return "Failed to parse the controller response: \(detail)"
         case .noCredentials: return "No password is stored for this account."
@@ -42,15 +42,26 @@ actor ProtectAPIClient {
     private var delegate: InsecureTrustDelegate
     private var host: String = ""
     private var csrfToken: String?
+    /// Session cookie (e.g. `TOKEN=…`) captured from responses and resent on
+    /// every request. Managed manually instead of relying on URLSession's
+    /// cookie storage, which is unreliable for this flow.
+    private var sessionCookie: String?
     private(set) var isAuthenticated = false
 
     init() {
         self.delegate = InsecureTrustDelegate(trustedHost: "")
+        self.session = ProtectAPIClient.makeSession(delegate: delegate)
+    }
+
+    private static func makeSession(delegate: InsecureTrustDelegate) -> URLSession {
         let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = HTTPCookieStorage()
-        config.httpCookieAcceptPolicy = .always
+        // We manage cookies and CSRF tokens by hand (see sessionCookie/csrfToken).
+        config.httpCookieStorage = nil
+        config.httpShouldSetCookies = false
+        config.httpCookieAcceptPolicy = .never
+        config.requestCachePolicy = .reloadIgnoringLocalCacheData
         config.timeoutIntervalForRequest = 20
-        self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        return URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
     }
 
     /// (Re)configure the client for a host. Resets any existing session.
@@ -58,13 +69,29 @@ actor ProtectAPIClient {
         let cleaned = ProtectAPIClient.normalizeHost(host)
         self.host = cleaned
         self.csrfToken = nil
+        self.sessionCookie = nil
         self.isAuthenticated = false
         self.delegate = InsecureTrustDelegate(trustedHost: cleaned)
-        let config = URLSessionConfiguration.ephemeral
-        config.httpCookieStorage = HTTPCookieStorage()
-        config.httpCookieAcceptPolicy = .always
-        config.timeoutIntervalForRequest = 20
-        self.session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        self.session = ProtectAPIClient.makeSession(delegate: delegate)
+    }
+
+    /// Attach the CSRF token and session cookie to an outgoing request.
+    private func applyAuth(to request: inout URLRequest) {
+        if let token = csrfToken { request.setValue(token, forHTTPHeaderField: "X-CSRF-Token") }
+        if let cookie = sessionCookie { request.setValue(cookie, forHTTPHeaderField: "Cookie") }
+    }
+
+    /// Capture rotated CSRF token and session cookie from a response.
+    private func captureAuth(from http: HTTPURLResponse) {
+        if let updated = http.value(forHTTPHeaderField: "X-Updated-CSRF-Token")
+            ?? http.value(forHTTPHeaderField: "X-CSRF-Token") {
+            csrfToken = updated
+        }
+        if let setCookie = http.value(forHTTPHeaderField: "Set-Cookie") {
+            // Keep only the `name=value` portion (drop Path/HttpOnly/etc.).
+            let first = setCookie.split(separator: ";").first.map(String.init) ?? setCookie
+            if first.contains("=") { sessionCookie = first }
+        }
     }
 
     var configuredHost: String { host }
@@ -93,9 +120,11 @@ actor ProtectAPIClient {
         }
 
         guard (200...299).contains(http.statusCode) else {
-            let bodyText = (String(data: data, encoding: .utf8) ?? "").lowercased()
+            let bodyText = (String(data: data, encoding: .utf8) ?? "")
+            NSLog("ProtectAPIClient: login failed HTTP \(http.statusCode): \(bodyText)")
+            let lower = bodyText.lowercased()
             if http.statusCode == 401 || http.statusCode == 499 {
-                if bodyText.contains("2fa") || bodyText.contains("mfa") || bodyText.contains("two") || bodyText.contains("otp") {
+                if lower.contains("2fa") || lower.contains("mfa") || lower.contains("two") || lower.contains("otp") {
                     throw ProtectAPIError.twoFactorRequired
                 }
                 throw ProtectAPIError.invalidCredentials
@@ -103,11 +132,7 @@ actor ProtectAPIClient {
             throw ProtectAPIError.authenticationFailed(http.statusCode)
         }
 
-        // Capture the rotated CSRF token, if provided.
-        if let updated = http.value(forHTTPHeaderField: "X-Updated-CSRF-Token")
-            ?? http.value(forHTTPHeaderField: "X-CSRF-Token") {
-            csrfToken = updated
-        }
+        captureAuth(from: http)
         isAuthenticated = true
     }
 
@@ -116,7 +141,8 @@ actor ProtectAPIClient {
         var request = URLRequest(url: loginURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let token = csrfToken { request.setValue(token, forHTTPHeaderField: "X-CSRF-Token") }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyAuth(to: &request)
         let body: [String: Any] = [
             "username": username,
             "password": password,
@@ -126,16 +152,17 @@ actor ProtectAPIClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProtectAPIError.requestFailed(-1) }
+        captureAuth(from: http)
         return (data, http)
     }
 
     private func primeCSRFToken(baseURL: URL) async {
         var request = URLRequest(url: baseURL)
         request.httpMethod = "GET"
+        applyAuth(to: &request)
         if let (_, response) = try? await session.data(for: request),
-           let http = response as? HTTPURLResponse,
-           let token = http.value(forHTTPHeaderField: "X-CSRF-Token") {
-            csrfToken = token
+           let http = response as? HTTPURLResponse {
+            captureAuth(from: http)
         }
     }
 
@@ -211,20 +238,21 @@ actor ProtectAPIClient {
         guard let url = URL(string: "https://\(host)\(path)") else { throw ProtectAPIError.invalidHost }
         var request = URLRequest(url: url)
         request.httpMethod = method
-        if let token = csrfToken { request.setValue(token, forHTTPHeaderField: "X-CSRF-Token") }
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        applyAuth(to: &request)
         if let body = body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw ProtectAPIError.requestFailed(-1) }
-        if let updated = http.value(forHTTPHeaderField: "X-Updated-CSRF-Token") {
-            csrfToken = updated
-        }
+        captureAuth(from: http)
         switch http.statusCode {
         case 200...299:
             return data
         case 401, 403:
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            NSLog("ProtectAPIClient: \(method) \(path) failed HTTP \(http.statusCode): \(bodyText)")
             if method != "GET" { throw ProtectAPIError.insufficientPermissions }
             throw ProtectAPIError.authenticationFailed(http.statusCode)
         default:
