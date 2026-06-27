@@ -4,7 +4,7 @@ import VLCKitSPM
 
 /// Playback state surfaced to the tile UI.
 enum PlaybackStatus: Equatable {
-    case idle, buffering, playing, error
+    case idle, buffering, playing, error, offline
 }
 
 /// Observable per-camera status so SwiftUI tiles can show overlays.
@@ -39,6 +39,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         weak var hostedIn: NSView?
         var caching = 1500
         var muted = true
+        var online = true
         // Watchdog bookkeeping.
         var startedAt = Date()
         var recoveryAttempts = 0
@@ -83,7 +84,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         entry(for: id).status
     }
 
-    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool) {
+    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool, online: Bool) {
         let e = entry(for: id)
         e.stopWork?.cancel(); e.stopWork = nil
         e.caching = caching
@@ -97,7 +98,22 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
         e.hostedIn = host
 
-        if e.requestedURL != url {
+        // Camera is offline: don't start/retry — just show the offline state and
+        // free any running player. We resume automatically when it comes back.
+        if !online {
+            let wasOnline = e.online
+            e.online = false
+            e.requestedURL = url
+            e.activeURL = url
+            setStatus(e, .offline)
+            if wasOnline { e.controlQueue.async { e.player.stop() } }
+            return
+        }
+
+        let cameBackOnline = !e.online
+        e.online = true
+
+        if e.requestedURL != url || cameBackOnline {
             e.requestedURL = url
             e.activeURL = url
             e.triedFallback = false
@@ -215,7 +231,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
-        for e in entries.values where e.hostedIn != nil {
+        for e in entries.values where e.hostedIn != nil && e.online {
             let state = e.player.state
             if state == .playing || state == .esAdded {
                 e.recoveryAttempts = 0
@@ -307,15 +323,16 @@ struct CameraVideoView: NSViewRepresentable {
     let url: URL
     var caching: Int = 1500
     var muted: Bool = true
+    var online: Bool = true
 
     func makeNSView(context: Context) -> HostView {
         let host = HostView()
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online)
         return host
     }
 
     func updateNSView(_ host: HostView, context: Context) {
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online)
     }
 
     static func dismantleNSView(_ host: HostView, coordinator: Void) {
@@ -329,6 +346,7 @@ final class HostView: NSView {
     private var url: URL?
     private var caching = 1500
     private var muted = true
+    private var online = true
 
     init() {
         super.init(frame: .zero)
@@ -339,7 +357,7 @@ final class HostView: NSView {
 
     required init?(coder: NSCoder) { super.init(coder: coder) }
 
-    func configure(cameraID: String, url: URL, caching: Int, muted: Bool) {
+    func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool) {
         if self.cameraID != cameraID, !self.cameraID.isEmpty {
             CameraPlayerManager.shared.detach(cameraID: self.cameraID, from: self)
         }
@@ -347,6 +365,7 @@ final class HostView: NSView {
         self.url = url
         self.caching = caching
         self.muted = muted
+        self.online = online
         if window != nil { attachIfPossible() }
     }
 
@@ -361,6 +380,6 @@ final class HostView: NSView {
 
     private func attachIfPossible() {
         guard let url = url, !cameraID.isEmpty else { return }
-        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted)
+        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted, online: online)
     }
 }

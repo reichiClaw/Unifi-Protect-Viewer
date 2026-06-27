@@ -177,6 +177,17 @@ actor ProtectAPIClient {
         }
     }
 
+    /// Lightweight fetch of just the cameras (used to poll online/connection
+    /// status without pulling the whole bootstrap).
+    func fetchCameras() async throws -> [ProtectCamera] {
+        let data = try await authedRequest(path: "/proxy/protect/api/cameras", method: "GET")
+        do {
+            return try JSONDecoder().decode([ProtectCamera].self, from: data)
+        } catch {
+            throw ProtectAPIError.decodingFailed(String(describing: error))
+        }
+    }
+
     /// Enable RTSP on the highest-resolution channel of each camera that has it
     /// disabled. Returns the IDs of cameras that were updated.
     @discardableResult

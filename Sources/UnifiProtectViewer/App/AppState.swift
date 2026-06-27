@@ -32,6 +32,7 @@ final class AppState: ObservableObject {
     private let apiClient = ProtectAPIClient()
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
+    private var statusPollTimer: Timer?
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -48,6 +49,36 @@ final class AppState: ObservableObject {
            let pw = storedPassword, !pw.isEmpty {
             connect()
         }
+
+        // Poll camera connection status so offline cameras stop retrying and
+        // reconnected cameras resume automatically.
+        let timer = Timer(timeInterval: 20, repeats: true) { [weak self] _ in
+            self?.pollCameraStatus()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        statusPollTimer = timer
+    }
+
+    private func pollCameraStatus() {
+        guard connectionState == .connected else { return }
+        Task {
+            guard let fetched = try? await apiClient.fetchCameras(), !fetched.isEmpty else { return }
+            await MainActor.run { self.refreshCameraStatus(fetched) }
+        }
+    }
+
+    /// Update connection/online status (and other fields) of known cameras
+    /// without disturbing playback or view configuration.
+    private func refreshCameraStatus(_ fetched: [ProtectCamera]) {
+        var changed = false
+        var map = camerasByID
+        for cam in fetched where map[cam.id] != nil {
+            if map[cam.id]?.isOnline != cam.isOnline { changed = true }
+            map[cam.id] = cam
+        }
+        camerasByID = map
+        cameras = cameras.map { map[$0.id] ?? $0 }
+        if changed { broadcastSnapshot() }
     }
 
     // MARK: - Configuration persistence

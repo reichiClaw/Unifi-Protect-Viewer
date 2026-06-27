@@ -34,7 +34,8 @@ struct CameraTileView: View {
             if let url = appState.streamURL(for: camera, quality: quality) {
                 CameraVideoView(cameraID: camera.id,
                                 url: url,
-                                caching: appState.config.connection.streamCacheMs)
+                                caching: appState.config.connection.streamCacheMs,
+                                online: camera.isOnline)
             } else {
                 noStreamPlaceholder
             }
@@ -96,6 +97,15 @@ struct CameraTileView: View {
                 Text("Stream error — retrying…")
                     .font(.caption2)
                     .foregroundColor(.white.opacity(0.8))
+            }
+        case .offline:
+            VStack(spacing: 6) {
+                Image(systemName: "video.slash.fill")
+                    .font(.title2)
+                    .foregroundColor(.secondary)
+                Text("Camera offline")
+                    .font(.caption)
+                    .foregroundColor(.white.opacity(0.7))
             }
         case .playing:
             EmptyView()
