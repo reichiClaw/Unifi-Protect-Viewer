@@ -78,7 +78,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func isHealthy(_ e: Entry) -> Bool {
         switch e.player.state {
         case .playing, .esAdded:
-            let t = Int(e.player.time?.intValue ?? 0)
+            let t = Int(e.player.time.intValue)
             if t <= 0 { e.lastTimeMs = t; return true } // just starting
             if t != e.lastTimeMs { e.lastTimeMs = t; return true }
             return false // time frozen → stalled
@@ -306,8 +306,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private func setStatus(_ e: Entry, _ s: PlaybackStatus) {
-        let apply = { if e.status.state != s { e.status.state = s } }
-        if Thread.isMainThread { apply() } else { DispatchQueue.main.async(execute: apply) }
+        // Always defer to the next main-thread cycle. setStatus is often called
+        // from within a SwiftUI view update (via attach during makeNSView), and
+        // mutating an @Published value during an update is undefined behavior.
+        DispatchQueue.main.async {
+            if e.status.state != s { e.status.state = s }
+        }
     }
 
     // MARK: VLCMediaPlayerDelegate
