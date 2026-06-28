@@ -1,9 +1,17 @@
 import SwiftUI
+import AppKit
+
+/// Opens the standard macOS Settings window (the same one as the
+/// app menu / ⌘,) so there's a single, consistent settings screen.
+@MainActor
+func openSettingsWindow() {
+    if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
+    NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+}
 
 struct ContentView: View {
     @EnvironmentObject private var appState: AppState
     @Environment(\.openWindow) private var openWindow
-    @State private var showingSettings = false
     @State private var editingView: CameraGridConfig?
 
     var body: some View {
@@ -12,11 +20,6 @@ struct ContentView: View {
                 .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 320)
         } detail: {
             detail
-        }
-        .sheet(isPresented: $showingSettings) {
-            SettingsView()
-                .environmentObject(appState)
-                .frame(width: 520, height: 460)
         }
         .sheet(item: $editingView) { view in
             ViewEditorView(view: view)
@@ -90,7 +93,7 @@ struct ContentView: View {
                 }
                 .help("Show log")
                 Button {
-                    showingSettings = true
+                    openSettingsWindow()
                 } label: {
                     Image(systemName: "gearshape")
                 }
@@ -143,7 +146,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if appState.connectionState != .connected && appState.cameras.isEmpty {
-            ConnectionPromptView(showSettings: { showingSettings = true })
+            ConnectionPromptView(showSettings: { openSettingsWindow() })
         } else if let cam = appState.fullscreenCamera {
             FullscreenCameraView(camera: cam)
         } else {
