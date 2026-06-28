@@ -5,6 +5,8 @@ let sd = null;
 let uuid = null;
 let actionType = null;
 let settings = {};
+let appWS = null;
+let appWSReconnect = null;
 
 const VIEW_ACTIONS = new Set([
 	"com.unifiprotectviewer.switchview",
@@ -69,11 +71,47 @@ function initUI() {
 			persist();
 		}
 	});
-	el("refresh").addEventListener("click", loadState);
+	el("refresh").addEventListener("click", () => { loadState(); connectAppWS(); });
 
-	// Auto-load the views & cameras so the dropdowns are populated immediately
-	// (and reflect the saved selection) without needing a manual refresh.
+	// Reconnect the live feed if the host/port changes.
+	["host", "port"].forEach((id) => {
+		const node = el(id);
+		if (node) node.addEventListener("change", connectAppWS);
+	});
+
+	// Auto-load once, and also subscribe to the app's WebSocket so the lists
+	// populate (and stay current) as soon as the app has cameras — regardless
+	// of whether the app had finished connecting when this inspector opened.
 	loadState();
+	connectAppWS();
+}
+
+// Live updates from the app: the control server pushes a full snapshot on
+// connect and whenever state changes. WebSockets aren't CORS-restricted, so
+// this works even when a one-shot fetch would race the app's startup.
+function connectAppWS() {
+	const host = el("host").value || "127.0.0.1";
+	const port = el("port").value || "8723";
+	if (appWSReconnect) { clearTimeout(appWSReconnect); appWSReconnect = null; }
+	if (appWS) { try { appWS.close(); } catch (e) { /* ignore */ } appWS = null; }
+	try {
+		appWS = new WebSocket(`ws://${host}:${port}/ws`);
+	} catch (e) {
+		return;
+	}
+	appWS.onmessage = (evt) => {
+		let snap;
+		try { snap = JSON.parse(evt.data); } catch (e) { return; }
+		// The /ws feed sends the raw snapshot (no { snapshot: … } wrapper).
+		if (snap.views) populateViews(snap.views);
+		if (snap.cameras) populateCameras(snap.cameras);
+		setStatus(`Loaded ${snap.views ? snap.views.length : 0} views, ${snap.cameras ? snap.cameras.length : 0} cameras.`);
+	};
+	appWS.onclose = () => {
+		// Auto-reconnect so the lists recover if the app restarts.
+		if (!appWSReconnect) appWSReconnect = setTimeout(connectAppWS, 3000);
+	};
+	appWS.onerror = () => { try { appWS.close(); } catch (e) { /* ignore */ } };
 }
 
 function fillUI() {
