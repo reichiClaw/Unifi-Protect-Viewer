@@ -382,6 +382,10 @@ final class HostView: NSView {
 
     required init?(coder: NSCoder) { super.init(coder: coder) }
 
+    // Let mouse clicks fall through to SwiftUI's gesture layer (so tapping a
+    // tile or the fullscreen video is reliably received).
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
     func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool) {
         if self.cameraID != cameraID, !self.cameraID.isEmpty {
             CameraPlayerManager.shared.detach(cameraID: self.cameraID, from: self)

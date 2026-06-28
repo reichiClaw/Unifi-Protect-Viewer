@@ -1,12 +1,27 @@
 import SwiftUI
 import AppKit
 
-/// Opens the standard macOS Settings window (the same one as the
-/// app menu / ⌘,) so there's a single, consistent settings screen.
+/// Legacy fallback to open the Settings window on macOS 13.
 @MainActor
 func openSettingsWindow() {
     if NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) { return }
     NSApp.sendAction(Selector(("showPreferencesWindow:")), to: nil, from: nil)
+}
+
+/// Opens the standard macOS Settings window (same as the app menu / ⌘,) so
+/// there's a single, consistent settings screen with a close button. Uses the
+/// official `SettingsLink` on macOS 14+, falling back to the action otherwise.
+struct SettingsOpener<Label: View>: View {
+    private let label: Label
+    init(@ViewBuilder label: () -> Label) { self.label = label() }
+
+    var body: some View {
+        if #available(macOS 14.0, *) {
+            SettingsLink { label }
+        } else {
+            Button(action: { openSettingsWindow() }) { label }
+        }
+    }
 }
 
 struct ContentView: View {
@@ -92,9 +107,7 @@ struct ContentView: View {
                     Image(systemName: "doc.text.magnifyingglass")
                 }
                 .help("Show log")
-                Button {
-                    openSettingsWindow()
-                } label: {
+                SettingsOpener {
                     Image(systemName: "gearshape")
                 }
                 .help("Settings")
@@ -146,7 +159,7 @@ struct ContentView: View {
     @ViewBuilder
     private var detail: some View {
         if appState.connectionState != .connected && appState.cameras.isEmpty {
-            ConnectionPromptView(showSettings: { openSettingsWindow() })
+            ConnectionPromptView()
         } else if let cam = appState.fullscreenCamera {
             FullscreenCameraView(camera: cam)
         } else {

@@ -3,7 +3,6 @@ import SwiftUI
 /// Shown when the app is not yet connected and has no cameras loaded.
 struct ConnectionPromptView: View {
     @EnvironmentObject private var appState: AppState
-    var showSettings: () -> Void
 
     var body: some View {
         VStack(spacing: 16) {
@@ -25,15 +24,13 @@ struct ConnectionPromptView: View {
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
 
-                    Button("Settings…") { showSettings() }
+                    SettingsOpener { Text("Settings…") }
                         .controlSize(.large)
                 }
             } else {
                 Text("Configure your UniFi Protect controller to get started.")
                     .foregroundColor(.secondary)
-                Button {
-                    showSettings()
-                } label: {
+                SettingsOpener {
                     Label("Open Settings", systemImage: "gearshape")
                 }
                 .controlSize(.large)

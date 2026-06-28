@@ -66,6 +66,13 @@ private struct ConnectionSettingsTab: View {
                     .foregroundColor(.secondary)
             }
 
+            Section("Behavior") {
+                Toggle("Click fullscreen view to return to the grid", isOn: Binding(
+                    get: { appState.config.tapFullscreenToExit },
+                    set: { appState.config.tapFullscreenToExit = $0; appState.saveConfig() }
+                ))
+            }
+
             Section {
                 HStack {
                     Button("Save & Connect") { saveAndConnect() }

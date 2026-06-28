@@ -117,6 +117,19 @@ struct AppConfiguration: Codable {
     var views: [CameraGridConfig] = []
     /// Local control server (Stream Deck bridge) settings.
     var control: ControlServerSettings = ControlServerSettings()
+    /// Clicking the fullscreen single-camera view returns to the grid.
+    var tapFullscreenToExit: Bool = true
+
+    init() {}
+
+    /// Resilient decoding so adding fields never invalidates a saved config.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        connection = try c.decodeIfPresent(ConnectionSettings.self, forKey: .connection) ?? ConnectionSettings()
+        views = try c.decodeIfPresent([CameraGridConfig].self, forKey: .views) ?? []
+        control = try c.decodeIfPresent(ControlServerSettings.self, forKey: .control) ?? ControlServerSettings()
+        tapFullscreenToExit = try c.decodeIfPresent(Bool.self, forKey: .tapFullscreenToExit) ?? true
+    }
 }
 
 /// Settings for the local HTTP/WebSocket control server used by the

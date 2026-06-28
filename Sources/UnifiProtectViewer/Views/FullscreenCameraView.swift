@@ -11,18 +11,23 @@ struct FullscreenCameraView: View {
         ZStack(alignment: .top) {
             // Instant layer: reuse the already-playing grid stream (just gets
             // reparented here → no delay). Shows overlays (offline/buffering).
-            CameraTileView(camera: camera, view: appState.currentView, showName: false, isFullscreen: false)
-                .id(camera.id)
+            // A click here returns to the grid (if enabled in Settings).
+            CameraTileView(camera: camera, view: appState.currentView, showName: false, isFullscreen: false) {
+                if appState.config.tapFullscreenToExit { appState.exitFullscreen() }
+            }
+            .id(camera.id)
 
             // Upgrade layer: the high-quality stream, started in the background
             // and faded in only once it is actually playing — so the switch to
             // fullscreen is immediate and then sharpens, with no black gap.
+            // Non-hit-testable so taps fall through to the base layer above.
             if needsUpgrade, let highURL = highQualityURL {
                 UpgradeVideoLayer(streamKey: camera.id + "#fs",
                                   url: highURL,
                                   caching: appState.config.connection.streamCacheMs,
                                   online: camera.isOnline)
                     .id(camera.id)
+                    .allowsHitTesting(false)
             }
 
             if showControls {
