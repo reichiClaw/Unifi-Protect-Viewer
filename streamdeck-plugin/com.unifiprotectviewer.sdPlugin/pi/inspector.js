@@ -70,6 +70,10 @@ function initUI() {
 		}
 	});
 	el("refresh").addEventListener("click", loadState);
+
+	// Auto-load the views & cameras so the dropdowns are populated immediately
+	// (and reflect the saved selection) without needing a manual refresh.
+	loadState();
 }
 
 function fillUI() {

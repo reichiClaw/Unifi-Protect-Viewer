@@ -76,6 +76,13 @@ final class ControlServer {
     // MARK: - Routes
 
     private func configureRoutes() {
+        // Answer CORS preflight (OPTIONS) for every route so the Stream Deck
+        // plugin webview can call us.
+        server.middleware.append { request in
+            guard request.method == "OPTIONS" else { return nil }
+            return .raw(204, "No Content", ControlServer.corsHeaders, nil)
+        }
+
         server["/api/state"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
         server["/api/views"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
         server["/api/cameras"] = { [weak self] req in self?.handleGetState(req) ?? .internalServerError }
@@ -250,14 +257,27 @@ final class ControlServer {
 
     private func jsonResult<T: Encodable>(_ value: T) -> HttpResponse {
         guard let data = try? JSONEncoder().encode(value) else { return .internalServerError }
-        return .raw(200, "OK", ["Content-Type": "application/json"]) { writer in
+        var headers = ControlServer.corsHeaders
+        headers["Content-Type"] = "application/json"
+        return .raw(200, "OK", headers) { writer in
             try writer.write(data)
         }
     }
 
     private func unauthorized() -> HttpResponse {
-        return .raw(401, "Unauthorized", ["Content-Type": "application/json"]) { writer in
+        var headers = ControlServer.corsHeaders
+        headers["Content-Type"] = "application/json"
+        return .raw(401, "Unauthorized", headers) { writer in
             try writer.write(Data("{\"ok\":false,\"message\":\"Unauthorized\"}".utf8))
         }
     }
+
+    /// CORS headers so the Stream Deck plugin's webview `fetch()` calls are
+    /// allowed (they're cross-origin from the plugin's point of view).
+    static let corsHeaders: [String: String] = [
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Auth-Token",
+        "Access-Control-Max-Age": "86400"
+    ]
 }
