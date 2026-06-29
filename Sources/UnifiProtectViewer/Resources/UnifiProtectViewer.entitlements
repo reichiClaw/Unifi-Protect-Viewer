@@ -8,5 +8,10 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- VLCKit loads its libvlc plugin dylibs (signed by VideoLAN, not us) at
+	     runtime. Under the hardened runtime (required for notarization) library
+	     validation would block them, so it must be disabled. -->
+	<key>com.apple.security.cs.disable-library-validation</key>
+	<true/>
 </dict>
 </plist>

@@ -99,6 +99,9 @@ Configuration is saved to
 The app runs a small local **control server** (default `http://127.0.0.1:8723`)
 that the Stream Deck plugin talks to. Configure it in **Settings → Stream Deck**.
 
+> **Distributing to other Macs?** See **[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)**
+> for building a signed/notarized Release `.app`/`.dmg`.
+
 See **[docs/STREAMDECK.md](docs/STREAMDECK.md)** for installing the plugin and the
 full HTTP/WebSocket API. In short:
 
