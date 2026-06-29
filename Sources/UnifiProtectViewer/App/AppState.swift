@@ -396,7 +396,7 @@ extension AppState: ControlServerHandler {
             ControlViewInfo(id: v.id.uuidString, index: idx, name: v.name, cameraCount: v.cameraIDs.count)
         }
         let cameraInfos = cameras.map {
-            ControlCameraInfo(id: $0.id, name: $0.displayName, online: $0.isOnline)
+            ControlCameraInfo(id: $0.id, name: $0.displayName, online: $0.isOnline, ptz: $0.isPTZ)
         }
         let fsCam = fullscreenCamera
         return ControlSnapshot(
@@ -406,6 +406,7 @@ extension AppState: ControlServerHandler {
             currentViewName: currentView?.name,
             fullscreenCameraID: fullscreenCameraID,
             fullscreenCameraName: fsCam?.displayName,
+            fullscreenCameraPtz: fsCam?.isPTZ ?? false,
             views: viewInfos,
             cameras: cameraInfos
         )
@@ -446,4 +447,29 @@ extension AppState: ControlServerHandler {
     }
 
     func controlReconnect() { reconnect() }
+
+    func controlPTZ(cameraID: String?, index: Int?, name: String?, action: String, slot: Int) -> Bool {
+        // Default to the camera currently shown fullscreen, so Stream Deck PTZ
+        // buttons control "whatever PTZ camera is on screen" with no per-button
+        // configuration.
+        let cam = resolveCamera(id: cameraID, index: index, name: name) ?? fullscreenCamera
+        guard let cam = cam else { return false }
+        let id = cam.id
+        appLog("PTZ \(action) slot=\(slot) on \"\(cam.displayName)\"")
+        Task {
+            do {
+                switch action {
+                case "home": try await apiClient.ptzGoto(cameraID: id, slot: -1)
+                case "goto": try await apiClient.ptzGoto(cameraID: id, slot: slot)
+                case "patrol-start": try await apiClient.ptzPatrolStart(cameraID: id, slot: slot)
+                case "patrol-stop": try await apiClient.ptzPatrolStop(cameraID: id)
+                default: break
+                }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                appLog("PTZ \(action) failed: \(message)", .error)
+            }
+        }
+        return true
+    }
 }

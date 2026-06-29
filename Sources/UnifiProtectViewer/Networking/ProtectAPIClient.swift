@@ -214,6 +214,24 @@ actor ProtectAPIClient {
         _ = try await authedRequest(path: "/proxy/protect/api/cameras/\(cameraID)", method: "PATCH", body: data)
     }
 
+    // MARK: - PTZ control (UniFi Protect integration API)
+
+    /// Move a PTZ camera to a saved preset. Slot -1 is the home position,
+    /// 0+ are user-configured presets.
+    func ptzGoto(cameraID: String, slot: Int) async throws {
+        _ = try await authedRequest(path: "/proxy/protect/integration/v1/cameras/\(cameraID)/ptz/goto/\(slot)", method: "POST")
+    }
+
+    /// Start a PTZ patrol (tour) by slot.
+    func ptzPatrolStart(cameraID: String, slot: Int) async throws {
+        _ = try await authedRequest(path: "/proxy/protect/integration/v1/cameras/\(cameraID)/ptz/patrol/start/\(slot)", method: "POST")
+    }
+
+    /// Stop the active PTZ patrol.
+    func ptzPatrolStop(cameraID: String) async throws {
+        _ = try await authedRequest(path: "/proxy/protect/integration/v1/cameras/\(cameraID)/ptz/patrol/stop", method: "POST")
+    }
+
     // MARK: - Stream URLs
 
     nonisolated static func streamURL(host: String,

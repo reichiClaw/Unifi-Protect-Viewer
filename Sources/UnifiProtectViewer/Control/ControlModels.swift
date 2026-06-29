@@ -8,6 +8,9 @@ struct ControlSnapshot: Codable {
     var currentViewName: String?
     var fullscreenCameraID: String?
     var fullscreenCameraName: String?
+    /// True when the currently fullscreen camera supports PTZ — the Stream Deck
+    /// plugin uses this to auto-switch to its PTZ control profile.
+    var fullscreenCameraPtz: Bool
     var views: [ControlViewInfo]
     var cameras: [ControlCameraInfo]
 }
@@ -23,6 +26,7 @@ struct ControlCameraInfo: Codable {
     var id: String
     var name: String
     var online: Bool
+    var ptz: Bool
 }
 
 /// Result returned to a control client after a command.
@@ -45,4 +49,7 @@ protocol ControlServerHandler: AnyObject {
     func controlExitFullscreen()
     func controlToggleFullscreen(cameraID: String?, index: Int?, name: String?) -> Bool
     func controlReconnect()
+    /// PTZ control. `action` is one of: "goto", "home", "patrol-start",
+    /// "patrol-stop". `slot` is the preset/patrol slot (ignored for stop/home).
+    func controlPTZ(cameraID: String?, index: Int?, name: String?, action: String, slot: Int) -> Bool
 }

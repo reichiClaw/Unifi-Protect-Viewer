@@ -35,9 +35,15 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
     let state: String?
     let isConnected: Bool?
     let channels: [ProtectChannel]
+    let featureFlags: ProtectFeatureFlags?
+
+    /// Whether this camera supports pan/tilt/zoom.
+    var isPTZ: Bool {
+        (featureFlags?.isPtz ?? false) || (featureFlags?.canOpticalZoom ?? false) || (type?.lowercased().contains("ptz") ?? false)
+    }
 
     enum CodingKeys: String, CodingKey {
-        case id, name, mac, type, state, isConnected, channels
+        case id, name, mac, type, state, isConnected, channels, featureFlags
     }
 
     init(from decoder: Decoder) throws {
@@ -49,6 +55,7 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
         state = try c.decodeIfPresent(String.self, forKey: .state)
         isConnected = try c.decodeIfPresent(Bool.self, forKey: .isConnected)
         channels = try c.decodeIfPresent([ProtectChannel].self, forKey: .channels) ?? []
+        featureFlags = try c.decodeIfPresent(ProtectFeatureFlags.self, forKey: .featureFlags)
     }
 
     /// Best-effort display name.
@@ -62,6 +69,20 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
 
     static func == (lhs: ProtectCamera, rhs: ProtectCamera) -> Bool { lhs.id == rhs.id }
     func hash(into hasher: inout Hasher) { hasher.combine(id) }
+}
+
+/// Subset of a camera's feature flags (used to detect PTZ capability).
+struct ProtectFeatureFlags: Decodable, Hashable {
+    let isPtz: Bool?
+    let canOpticalZoom: Bool?
+
+    enum CodingKeys: String, CodingKey { case isPtz, canOpticalZoom }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isPtz = try c.decodeIfPresent(Bool.self, forKey: .isPtz)
+        canOpticalZoom = try c.decodeIfPresent(Bool.self, forKey: .canOpticalZoom)
+    }
 }
 
 /// A camera channel (resolution profile). RTSP is exposed per-channel.
