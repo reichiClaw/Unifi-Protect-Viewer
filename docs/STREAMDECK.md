@@ -58,6 +58,50 @@ Button titles automatically update to show the active view / fullscreen camera.
 | Previous View | Move to the previous view |
 | Camera Fullscreen | Toggle a specific camera fullscreen |
 | Exit Fullscreen | Return to the grid |
+| PTZ: Go to Preset | Move the **current fullscreen** PTZ camera to a preset slot |
+| PTZ: Home | Move the current fullscreen PTZ camera to its home position |
+| PTZ: Start Patrol | Start a patrol (tour) on the current fullscreen PTZ camera |
+| PTZ: Stop Patrol | Stop the active patrol |
+
+## PTZ control
+
+The PTZ actions always target **whichever PTZ camera is currently shown
+fullscreen** in the app — so a single set of PTZ buttons works for every PTZ
+camera. Each PTZ action just needs the **Host/Port/Token**; *Preset* and
+*Patrol* also take a **slot** number (0+ = saved presets/patrols; the *Home*
+action uses the home position).
+
+### Auto-switch to a PTZ page when a PTZ camera is fullscreen
+
+The plugin can automatically switch your Stream Deck to a dedicated **PTZ
+profile** the moment a PTZ camera goes fullscreen, and switch back when you
+leave fullscreen. Because Stream Deck profiles are device-specific and must be
+designed by you (preset slots map to *your* saved camera positions), this is a
+one-time setup:
+
+1. In the Stream Deck app, create a new **profile** and name it exactly
+   **`UniFi Protect PTZ`**.
+2. Add your PTZ buttons to it: e.g. **PTZ: Home**, several **PTZ: Go to Preset**
+   (slot 0, 1, 2 …), **PTZ: Start Patrol**, **PTZ: Stop Patrol**, and an
+   **Exit Fullscreen** button to leave.
+3. Right-click the profile → **Export** → save `UniFi Protect PTZ.streamDeckProfile`
+   into the plugin folder
+   (`…/Plugins/com.unifiprotectviewer.sdPlugin/`).
+4. Add it to the plugin's `manifest.json` `Profiles` array (create the array if
+   missing), matching your device type (`0` = Stream Deck, `2` = XL, `7` = Plus):
+   ```json
+   "Profiles": [
+     { "Name": "UniFi Protect PTZ", "DeviceType": 0, "Readonly": false, "DontAutoSwitchWhenInstalled": true }
+   ]
+   ```
+5. Restart the Stream Deck app.
+
+Now, when you make a PTZ camera fullscreen (in the app or via a **Camera
+Fullscreen** button), the Stream Deck jumps to your PTZ profile; leaving
+fullscreen switches back automatically.
+
+> The PTZ **actions** work on any page even without this profile setup — the
+> auto-switch is just a convenience layer on top.
 
 ## Control server HTTP API
 
@@ -77,6 +121,7 @@ parameter, or a `token` field in the JSON body.
 | POST | `/api/toggle-fullscreen` | `{ "cameraId"?, "index"?, "name"? }` |
 | POST | `/api/exit-fullscreen` | — |
 | POST | `/api/reconnect` | — |
+| POST | `/api/ptz` | `{ "action": "goto"\|"home"\|"patrol-start"\|"patrol-stop", "slot"?, "cameraId"?/"index"?/"name"? }` (no camera → current fullscreen) |
 
 `index` for `fullscreen` is relative to the **current view's** camera list, then
 falls back to the global camera list.

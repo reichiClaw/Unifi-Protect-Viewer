@@ -15,12 +15,26 @@ const buttons = new Map();
 // "host:port" -> AppConnection
 const appConnections = new Map();
 
+// Connected Stream Deck device ids (for profile switching).
+const devices = new Set();
+
+// Name of the bundled profile to switch to when a PTZ camera is fullscreen.
+// To enable auto-switching, create a profile with this exact name containing
+// your PTZ actions, export it into the plugin folder, and add it to the
+// manifest "Profiles" array (see docs/STREAMDECK.md).
+const PTZ_PROFILE = "UniFi Protect PTZ";
+let ptzProfileActive = false;
+
 const ACTIONS = {
 	SWITCH: "com.unifiprotectviewer.switchview",
 	NEXT: "com.unifiprotectviewer.nextview",
 	PREV: "com.unifiprotectviewer.prevview",
 	FULLSCREEN: "com.unifiprotectviewer.fullscreen",
 	EXIT: "com.unifiprotectviewer.exitfullscreen",
+	PTZ_PRESET: "com.unifiprotectviewer.ptzpreset",
+	PTZ_HOME: "com.unifiprotectviewer.ptzhome",
+	PTZ_PATROL: "com.unifiprotectviewer.ptzpatrol",
+	PTZ_STOP: "com.unifiprotectviewer.ptzstop",
 };
 
 function defaults(settings) {
@@ -32,6 +46,7 @@ function defaults(settings) {
 		viewName: settings && settings.viewName,
 		cameraIndex: settings && settings.cameraIndex,
 		cameraName: settings && settings.cameraName,
+		slot: settings && settings.slot,
 	};
 }
 
@@ -42,8 +57,14 @@ function baseURL(s) {
 // ---------------------------------------------------------------------------
 // Stream Deck registration entry point.
 // ---------------------------------------------------------------------------
-function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, _inInfo) {
+function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, inInfo) {
 	pluginUUID = inPluginUUID;
+	// Seed the known devices from the registration info.
+	try {
+		const info = JSON.parse(inInfo);
+		(info.devices || []).forEach((d) => { if (d && d.id) devices.add(d.id); });
+	} catch (e) { /* ignore */ }
+
 	sd = new WebSocket(`ws://127.0.0.1:${inPort}`);
 
 	sd.onopen = () => {
@@ -78,8 +99,30 @@ function handleSDMessage(msg) {
 		case "keyDown":
 			onKeyDown(action, context, defaults(payload.settings));
 			break;
+		case "deviceDidConnect":
+			if (msg.device) devices.add(msg.device);
+			break;
+		case "deviceDidDisconnect":
+			if (msg.device) devices.delete(msg.device);
+			break;
 		default:
 			break;
+	}
+}
+
+// Switch to the PTZ profile when a PTZ camera is fullscreen, and back when not.
+function evaluateProfileSwitch(snapshot) {
+	const want = !!(snapshot && snapshot.fullscreenCameraPtz);
+	if (want === ptzProfileActive) return;
+	ptzProfileActive = want;
+	for (const device of devices) {
+		send({
+			event: "switchToProfile",
+			context: pluginUUID,
+			device,
+			// Empty payload returns to the previously selected profile.
+			payload: want ? { profile: PTZ_PROFILE } : {},
+		});
 	}
 }
 
@@ -106,6 +149,22 @@ async function onKeyDown(action, context, s) {
 			break;
 		case ACTIONS.EXIT:
 			path = "/api/exit-fullscreen";
+			break;
+		case ACTIONS.PTZ_PRESET:
+			path = "/api/ptz";
+			body = { action: "goto", slot: parseInt(s.slot || "0", 10) };
+			break;
+		case ACTIONS.PTZ_HOME:
+			path = "/api/ptz";
+			body = { action: "home" };
+			break;
+		case ACTIONS.PTZ_PATROL:
+			path = "/api/ptz";
+			body = { action: "patrol-start", slot: parseInt(s.slot || "0", 10) };
+			break;
+		case ACTIONS.PTZ_STOP:
+			path = "/api/ptz";
+			body = { action: "patrol-stop" };
 			break;
 		default:
 			return;
@@ -175,6 +234,7 @@ class AppConnection {
 				const snap = JSON.parse(evt.data);
 				this.snapshot = snap;
 				broadcastSnapshot(connKey(this.settings), snap);
+				evaluateProfileSwitch(snap);
 			} catch (e) { /* ignore */ }
 		};
 		this.ws.onclose = () => this.scheduleReconnect();

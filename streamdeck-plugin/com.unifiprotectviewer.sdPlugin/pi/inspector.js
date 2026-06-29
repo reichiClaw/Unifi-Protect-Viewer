@@ -16,6 +16,10 @@ const VIEW_ACTIONS = new Set([
 ]);
 const SWITCH_ACTION = "com.unifiprotectviewer.switchview";
 const FULLSCREEN_ACTION = "com.unifiprotectviewer.fullscreen";
+const PTZ_SLOT_ACTIONS = new Set([
+	"com.unifiprotectviewer.ptzpreset",
+	"com.unifiprotectviewer.ptzpatrol",
+]);
 
 function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, _inInfo, inActionInfo) {
 	uuid = inUUID;
@@ -44,13 +48,14 @@ function initUI() {
 	// Show only the relevant action-specific group.
 	if (actionType === SWITCH_ACTION) el("view-group").hidden = false;
 	if (actionType === FULLSCREEN_ACTION) el("camera-group").hidden = false;
+	if (PTZ_SLOT_ACTIONS.has(actionType)) el("ptz-group").hidden = false;
 	if (!actionType || (!VIEW_ACTIONS.has(actionType) && actionType !== FULLSCREEN_ACTION)) {
 		// generic
 	}
 
 	fillUI();
 
-	["host", "port", "token", "viewIndex", "viewName", "cameraIndex", "cameraName"]
+	["host", "port", "token", "viewIndex", "viewName", "cameraIndex", "cameraName", "slot"]
 		.forEach((id) => {
 			const node = el(id);
 			if (node) node.addEventListener("input", persist);
@@ -122,6 +127,7 @@ function fillUI() {
 	el("viewName").value = settings.viewName || "";
 	el("cameraIndex").value = settings.cameraIndex || "";
 	el("cameraName").value = settings.cameraName || "";
+	el("slot").value = settings.slot || "";
 }
 
 function persist() {
@@ -133,6 +139,7 @@ function persist() {
 		viewName: el("viewName").value,
 		cameraIndex: el("cameraIndex").value,
 		cameraName: el("cameraName").value,
+		slot: el("slot").value,
 	};
 	sd.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
 }

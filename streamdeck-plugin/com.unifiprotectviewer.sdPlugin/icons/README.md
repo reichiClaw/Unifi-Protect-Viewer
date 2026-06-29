@@ -14,6 +14,10 @@ files (provide both `@1x` and `@2x` where noted):
 | `prevView.png` / `prevView@2x.png` | 20×20 / 40×40 | Previous View action |
 | `fullscreen.png` / `fullscreen@2x.png` | 20×20 / 40×40 | Camera Fullscreen action |
 | `exitFullscreen.png` / `exitFullscreen@2x.png` | 20×20 / 40×40 | Exit Fullscreen action |
+| `ptz.png` / `ptz@2x.png` | 20×20 / 40×40 | PTZ: Go to Preset |
+| `ptzHome.png` / `ptzHome@2x.png` | 20×20 / 40×40 | PTZ: Home |
+| `ptzPatrol.png` / `ptzPatrol@2x.png` | 20×20 / 40×40 | PTZ: Start Patrol |
+| `ptzStop.png` / `ptzStop@2x.png` | 20×20 / 40×40 | PTZ: Stop Patrol |
 
 You can generate simple placeholder icons with the helper script:
 

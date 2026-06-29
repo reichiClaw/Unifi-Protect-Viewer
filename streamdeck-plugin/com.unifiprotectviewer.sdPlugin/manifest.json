@@ -59,6 +59,38 @@
 			"Icon": "icons/exitFullscreen",
 			"PropertyInspectorPath": "pi/inspector.html",
 			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzpreset",
+			"Name": "PTZ: Go to Preset",
+			"Tooltip": "Move the fullscreen PTZ camera to a saved preset slot.",
+			"Icon": "icons/ptz",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzhome",
+			"Name": "PTZ: Home",
+			"Tooltip": "Move the fullscreen PTZ camera to its home position.",
+			"Icon": "icons/ptzHome",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzpatrol",
+			"Name": "PTZ: Start Patrol",
+			"Tooltip": "Start a patrol (tour) on the fullscreen PTZ camera.",
+			"Icon": "icons/ptzPatrol",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" } ]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzstop",
+			"Name": "PTZ: Stop Patrol",
+			"Tooltip": "Stop the active patrol on the fullscreen PTZ camera.",
+			"Icon": "icons/ptzStop",
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
 		}
 	]
 }
