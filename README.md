@@ -1,5 +1,7 @@
 # UniFi Protect Viewer
 
+<img src="docs/app-icon.png" alt="UniFi Protect Viewer icon" width="128" align="right" />
+
 A native **macOS** app that connects to a **UniFi Protect** controller and shows
 your cameras in configurable grid views, with **Elgato Stream Deck** integration
 to switch between views and pop individual cameras fullscreen.
