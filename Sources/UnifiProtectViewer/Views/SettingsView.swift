@@ -21,6 +21,7 @@ private struct ManualStreamsTab: View {
     @EnvironmentObject private var appState: AppState
     @State private var newName = ""
     @State private var newURL = ""
+    @State private var editing: ManualCamera?
 
     var body: some View {
         Form {
@@ -41,12 +42,20 @@ private struct ManualStreamsTab: View {
                                 .truncationMode(.middle)
                         }
                         Spacer()
+                        Button {
+                            editing = cam
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Edit")
                         Button(role: .destructive) {
                             appState.removeManualCamera(id: cam.id)
                         } label: {
                             Image(systemName: "trash")
                         }
                         .buttonStyle(.borderless)
+                        .help("Remove")
                     }
                 }
             } header: {
@@ -73,6 +82,55 @@ private struct ManualStreamsTab: View {
         }
         .formStyle(.grouped)
         .frame(width: 520, height: 460)
+        .sheet(item: $editing) { cam in
+            ManualStreamEditor(camera: cam) { updated in
+                appState.updateManualCamera(updated)
+            }
+        }
+    }
+}
+
+/// Edit an existing custom stream's name and URL.
+private struct ManualStreamEditor: View {
+    let camera: ManualCamera
+    var onSave: (ManualCamera) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var url: String
+
+    init(camera: ManualCamera, onSave: @escaping (ManualCamera) -> Void) {
+        self.camera = camera
+        self.onSave = onSave
+        _name = State(initialValue: camera.name)
+        _url = State(initialValue: camera.url)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit stream")
+                .font(.headline)
+            Form {
+                TextField("Name", text: $name, prompt: Text("e.g. Warehouse RTSP"))
+                TextField("Stream URL", text: $url, prompt: Text("rtsp://user:pass@host:554/stream"))
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") {
+                    var updated = camera
+                    updated.url = url.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let trimmedName = name.trimmingCharacters(in: .whitespaces)
+                    updated.name = trimmedName.isEmpty ? updated.url : trimmedName
+                    onSave(updated)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 460, height: 240)
     }
 }
 
