@@ -5,10 +5,73 @@ struct SettingsView: View {
         TabView {
             ConnectionSettingsTab()
                 .tabItem { Label("Connection", systemImage: "network") }
+            ManualStreamsTab()
+                .tabItem { Label("Streams", systemImage: "dot.radiowaves.left.and.right") }
             ControlSettingsTab()
                 .tabItem { Label("Stream Deck", systemImage: "rectangle.grid.3x2") }
         }
         .padding(20)
+        .frame(width: 520, height: 460)
+    }
+}
+
+// MARK: - Custom (non-UniFi) streams
+
+private struct ManualStreamsTab: View {
+    @EnvironmentObject private var appState: AppState
+    @State private var newName = ""
+    @State private var newURL = ""
+
+    var body: some View {
+        Form {
+            Section {
+                if appState.config.manualCameras.isEmpty {
+                    Text("No custom streams yet. Add any RTSP/RTSPS/HTTP(S)/HLS stream below — it appears alongside your UniFi cameras and can be placed in any view.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                ForEach(appState.config.manualCameras) { cam in
+                    HStack {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(cam.name)
+                            Text(cam.url)
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                        Spacer()
+                        Button(role: .destructive) {
+                            appState.removeManualCamera(id: cam.id)
+                        } label: {
+                            Image(systemName: "trash")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            } header: {
+                Text("Custom streams")
+            }
+
+            Section {
+                TextField("Name", text: $newName, prompt: Text("e.g. Warehouse RTSP"))
+                TextField("Stream URL", text: $newURL, prompt: Text("rtsp://user:pass@host:554/stream"))
+                Button {
+                    appState.addManualCamera(name: newName, url: newURL)
+                    newName = ""; newURL = ""
+                } label: {
+                    Label("Add stream", systemImage: "plus")
+                }
+                .disabled(newURL.trimmingCharacters(in: .whitespaces).isEmpty)
+            } header: {
+                Text("Add a stream")
+            } footer: {
+                Text("Any URL the player supports works (RTSP/RTSPS, HTTP(S), HLS `.m3u8`, …). Custom streams play the same URL in the grid and fullscreen (no substreams), and don't require a UniFi connection.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
         .frame(width: 520, height: 460)
     }
 }

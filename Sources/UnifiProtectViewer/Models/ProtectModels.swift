@@ -36,6 +36,25 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
     let isConnected: Bool?
     let channels: [ProtectChannel]
     let featureFlags: ProtectFeatureFlags?
+    /// For user-added (non-UniFi) streams: the direct stream URL to play.
+    /// `nil` for real Protect cameras (their URL is built from channels).
+    let directURL: String?
+
+    /// True for a user-added custom stream.
+    var isManual: Bool { directURL != nil }
+
+    /// Construct a manual (non-UniFi) camera from a direct stream URL.
+    init(manualID: String, name: String, url: String) {
+        self.id = manualID
+        self.name = name
+        self.mac = nil
+        self.type = "manual"
+        self.state = "connected"
+        self.isConnected = true
+        self.channels = []
+        self.featureFlags = nil
+        self.directURL = url
+    }
 
     /// Whether this camera supports pan/tilt/zoom.
     var isPTZ: Bool {
@@ -56,6 +75,7 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
         isConnected = try c.decodeIfPresent(Bool.self, forKey: .isConnected)
         channels = try c.decodeIfPresent([ProtectChannel].self, forKey: .channels) ?? []
         featureFlags = try c.decodeIfPresent(ProtectFeatureFlags.self, forKey: .featureFlags)
+        directURL = nil
     }
 
     /// Best-effort display name.

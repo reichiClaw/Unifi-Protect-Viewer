@@ -32,6 +32,8 @@ final class AppState: ObservableObject {
     private let apiClient = ProtectAPIClient()
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
+    /// Last cameras loaded from the UniFi controller (merged with manual ones).
+    private var protectCameras: [ProtectCamera] = []
     private var statusPollTimer: Timer?
     private var statsTimer: Timer?
 
@@ -43,6 +45,12 @@ final class AppState: ObservableObject {
         }
         self.selectedViewID = config.views.first?.id
         startControlServerIfNeeded()
+
+        // Make any user-added custom streams available immediately (even before
+        // / without connecting to a UniFi controller).
+        if !config.manualCameras.isEmpty {
+            rebuildCameras(prune: false)
+        }
 
         // Auto-connect on launch when configured and credentials are present.
         if config.connection.autoConnect,
@@ -96,6 +104,7 @@ final class AppState: ObservableObject {
         }
         camerasByID = map
         cameras = cameras.map { map[$0.id] ?? $0 }
+        protectCameras = protectCameras.map { map[$0.id] ?? $0 }
         if changed { broadcastSnapshot() }
     }
 
@@ -185,19 +194,68 @@ final class AppState: ObservableObject {
     }
 
     private func applyCameras(_ loaded: [ProtectCamera]) {
-        cameras = loaded
-        camerasByID = Dictionary(uniqueKeysWithValues: loaded.map { ($0.id, $0) })
+        protectCameras = loaded
+        rebuildCameras(prune: true)
+    }
 
-        // Auto-populate any empty views (e.g. the seeded "All Cameras") with all cameras.
-        for index in config.views.indices where config.views[index].cameraIDs.isEmpty {
-            config.views[index].cameraIDs = loaded.map { $0.id }
-        }
-        // Drop camera IDs that no longer exist.
-        for index in config.views.indices {
-            config.views[index].cameraIDs.removeAll { camerasByID[$0] == nil }
+    private func manualProtectCameras() -> [ProtectCamera] {
+        config.manualCameras.map { ProtectCamera(manualID: $0.id, name: $0.name, url: $0.url) }
+    }
+
+    /// Rebuild the combined camera list (UniFi + manual). `prune` is only true
+    /// after a real controller load — it auto-populates empty views and drops
+    /// stale IDs (we must not prune before Protect cameras are known).
+    private func rebuildCameras(prune: Bool) {
+        let combined = (protectCameras + manualProtectCameras())
+            .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        cameras = combined
+        camerasByID = Dictionary(uniqueKeysWithValues: combined.map { ($0.id, $0) })
+
+        if prune {
+            for index in config.views.indices where config.views[index].cameraIDs.isEmpty {
+                config.views[index].cameraIDs = combined.map { $0.id }
+            }
+            for index in config.views.indices {
+                config.views[index].cameraIDs.removeAll { camerasByID[$0] == nil }
+            }
         }
         if selectedViewID == nil { selectedViewID = config.views.first?.id }
         saveConfig()
+    }
+
+    // MARK: - Manual (non-UniFi) streams
+
+    func addManualCamera(name: String, url: String) {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+        let displayName = name.trimmingCharacters(in: .whitespaces)
+        let cam = ManualCamera(name: displayName.isEmpty ? trimmedURL : displayName, url: trimmedURL)
+        config.manualCameras.append(cam)
+        rebuildCameras(prune: false)
+        // Show it right away by adding it to the current view.
+        if let vid = selectedViewID ?? config.views.first?.id,
+           let idx = config.views.firstIndex(where: { $0.id == vid }),
+           !config.views[idx].cameraIDs.contains(cam.id) {
+            config.views[idx].cameraIDs.append(cam.id)
+        }
+        saveConfig()
+        broadcastSnapshot()
+    }
+
+    func updateManualCamera(_ cam: ManualCamera) {
+        guard let idx = config.manualCameras.firstIndex(where: { $0.id == cam.id }) else { return }
+        config.manualCameras[idx] = cam
+        rebuildCameras(prune: false)
+        broadcastSnapshot()
+    }
+
+    func removeManualCamera(id: String) {
+        config.manualCameras.removeAll { $0.id == id }
+        for index in config.views.indices {
+            config.views[index].cameraIDs.removeAll { $0 == id }
+        }
+        rebuildCameras(prune: false)
+        broadcastSnapshot()
     }
 
     private func setStatus(_ message: String, state: ConnectionState) {
@@ -224,6 +282,10 @@ final class AppState: ObservableObject {
     func camera(for id: String) -> ProtectCamera? { camerasByID[id] }
 
     func streamURL(for camera: ProtectCamera, quality: StreamQuality) -> URL? {
+        // Manual/custom streams play their URL directly.
+        if let direct = camera.directURL {
+            return URL(string: direct)
+        }
         return ProtectAPIClient.streamURL(
             host: config.connection.host,
             camera: camera,

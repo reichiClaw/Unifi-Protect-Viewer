@@ -111,6 +111,14 @@ struct CameraGridConfig: Codable, Identifiable, Equatable {
     }
 }
 
+/// A user-added stream that isn't a UniFi Protect camera (e.g. a third-party
+/// RTSP/HTTP camera). Played by the same engine as Protect cameras.
+struct ManualCamera: Codable, Identifiable, Equatable {
+    var id: String = UUID().uuidString
+    var name: String
+    var url: String
+}
+
 /// Root persisted document for the app.
 struct AppConfiguration: Codable {
     var connection: ConnectionSettings = ConnectionSettings()
@@ -119,6 +127,8 @@ struct AppConfiguration: Codable {
     var control: ControlServerSettings = ControlServerSettings()
     /// Clicking the fullscreen single-camera view returns to the grid.
     var tapFullscreenToExit: Bool = true
+    /// User-added non-UniFi streams.
+    var manualCameras: [ManualCamera] = []
 
     init() {}
 
@@ -129,6 +139,7 @@ struct AppConfiguration: Codable {
         views = try c.decodeIfPresent([CameraGridConfig].self, forKey: .views) ?? []
         control = try c.decodeIfPresent(ControlServerSettings.self, forKey: .control) ?? ControlServerSettings()
         tapFullscreenToExit = try c.decodeIfPresent(Bool.self, forKey: .tapFullscreenToExit) ?? true
+        manualCameras = try c.decodeIfPresent([ManualCamera].self, forKey: .manualCameras) ?? []
     }
 }
 

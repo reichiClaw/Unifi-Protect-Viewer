@@ -8,6 +8,7 @@ to switch between views and pop individual cameras fullscreen.
 
 - 🎥 Live multi-camera grid powered by the cameras' RTSP/RTSPS streams (VLCKit)
 - 🧩 Multiple **configurable, named grid views** (pick cameras, ordering, layout, quality)
+- ➕ **Custom streams** — add any RTSP/HTTP/HLS source (non‑UniFi cameras) alongside your Protect cameras
 - 🖥️ Click any tile to go **fullscreen**; step through cameras with the keyboard
 - 🎛️ **Stream Deck plugin** to switch views, pop a camera fullscreen, and step views
 - 🔐 Password stored in the macOS **Keychain**; talks only to your local controller

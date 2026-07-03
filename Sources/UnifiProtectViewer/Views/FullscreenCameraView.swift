@@ -44,12 +44,19 @@ struct FullscreenCameraView: View {
         .onExitCommand { appState.exitFullscreen() }
     }
 
-    private var needsUpgrade: Bool {
-        appState.fullscreenQuality != appState.gridQuality(for: appState.currentView)
+    private var gridURL: URL? {
+        appState.streamURL(for: camera, quality: appState.gridQuality(for: appState.currentView))
     }
 
     private var highQualityURL: URL? {
         appState.streamURL(for: camera, quality: appState.fullscreenQuality)
+    }
+
+    /// Only upgrade when the high-quality URL actually differs from the grid
+    /// one (e.g. skip for manual streams or single-channel cameras).
+    private var needsUpgrade: Bool {
+        guard let high = highQualityURL, let base = gridURL else { return false }
+        return high != base
     }
 
     private var controlBar: some View {
