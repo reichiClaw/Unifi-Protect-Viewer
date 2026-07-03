@@ -46,6 +46,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
         var announcedPlaying = false
+        /// When the player was stopped while off-screen (for memory eviction).
+        var idleSince: Date?
         init(id: String) {
             self.id = id
             controlQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.\(id)")
@@ -66,6 +68,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Stagger (re)starts so we never hit the controller with a connection storm.
     private var nextStartAt = Date()
     private let startStagger: TimeInterval = 0.25
+    /// Fully release (deallocate) a player that has been off-screen this long,
+    /// to free its decoder/network buffers — important on low-RAM machines.
+    private let evictionSeconds: TimeInterval = 60
 
     override init() {
         super.init()
@@ -85,6 +90,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool, online: Bool) {
         let e = entry(for: id)
         e.stopWork?.cancel(); e.stopWork = nil
+        e.idleSince = nil
         e.caching = caching
         e.muted = muted
 
@@ -232,9 +238,28 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     private func stop(_ e: Entry) {
         setStatus(e, .idle)
+        e.idleSince = Date()
         e.controlQueue.async {
             e.player.stop()
+            // Release the media so its demux/decoder/network buffers are freed
+            // while the camera is off-screen (frees RAM on the wall).
+            e.player.media = nil
         }
+    }
+
+    /// Fully release an off-screen player to reclaim its memory.
+    private func evict(_ id: String) {
+        guard let e = entries[id] else { return }
+        e.stopWork?.cancel(); e.stopWork = nil
+        e.player.delegate = nil
+        e.player.drawable = nil
+        entries.removeValue(forKey: id)
+        let p = e.player
+        e.controlQueue.async {
+            p.stop()
+            p.media = nil
+        }
+        appLog("Player[\(id)]: evicted (idle \(Int(evictionSeconds))s) to free memory", .debug)
     }
 
     // MARK: Watchdog
@@ -266,6 +291,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                 break // opening / buffering / paused — leave it alone
             }
         }
+
+        // Evict players that have been off-screen long enough, to free memory.
+        let stale = entries.values.filter { $0.hostedIn == nil }
+            .filter { ($0.idleSince.map { now.timeIntervalSince($0) > evictionSeconds }) ?? false }
+            .map { $0.id }
+        for id in stale { evict(id) }
     }
 
     private func recover(_ e: Entry, now: Date) {

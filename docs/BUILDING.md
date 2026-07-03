@@ -158,6 +158,7 @@ See the main [README](../README.md) for using views/fullscreen and
 | Self-signed cert errors | Expected for UniFi controllers; trust is pinned to your configured host automatically. |
 | Tiles error immediately with `rtsps://…:7441` URLs | RTSPS (TLS) isn't supported by the video engine against UniFi's self-signed cert. Turn **off** "Use RTSPS" in Settings (plain RTSP on 7447). The app also auto-falls back to RTSP on failure. |
 | Very high CPU / choppy video with many cameras | Each tile decodes a live stream; 4K×many is heavy. Set default quality (or a per-view quality) to **Low**/**Medium**. |
+| Freezes / beachball from high **memory** use (esp. 8 GB Macs) | Decoded-frame RAM scales with resolution. Set **Grid quality = Low** (640×360) — the single biggest reduction. The app also frees a stream's buffers when it scrolls off-screen and fully evicts players idle >60 s. Keep the buffer moderate (≈1500 ms) and prefer fewer very-high-res tiles; use Fullscreen (High) for detail on demand. |
 | Crash on launch referencing VLCKit | Reset package caches; ensure the VLCKit (vlckit-spm) package finished downloading. |
 
 ## Notes on distribution

@@ -61,7 +61,7 @@ private struct ConnectionSettingsTab: View {
             } header: {
                 Text("Streaming")
             } footer: {
-                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). Use a lower **Grid quality** (Low/Medium) for many cameras to reduce CPU/bandwidth, and a higher **Fullscreen quality** for the single-camera view. A larger **Buffer** adds latency but makes playback much more resilient on a 24/7 wall (≈1500–2500 ms recommended).")
+                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). A higher **Fullscreen quality** gives a crisp single-camera view.\n\n**Memory/CPU:** each grid tile decodes a live stream, and RAM use scales with resolution. On machines with 8 GB or many cameras, set **Grid quality = Low** (640×360) — this is by far the biggest way to cut memory and prevent freezes. A larger **Buffer** adds latency but is more resilient on a 24/7 wall (≈1500–2500 ms).")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
