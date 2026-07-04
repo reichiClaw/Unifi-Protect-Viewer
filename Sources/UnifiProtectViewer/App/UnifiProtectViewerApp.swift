@@ -1,7 +1,22 @@
 import SwiftUI
+import AppKit
+
+/// Installs crash diagnostics as early as possible and logs launch/quit.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        CrashReporter.install(logFileURL: AppLog.shared.fileURL)
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        appLog("App launched (version \(version))")
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        appLog("App terminating normally")
+    }
+}
 
 @main
 struct UnifiProtectViewerApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var appState = AppState()
 
     var body: some Scene {

@@ -155,3 +155,53 @@ enum SystemStats {
         return Double(info.phys_footprint) / 1024.0 / 1024.0
     }
 }
+
+/// Best-effort crash capture: records uncaught Obj-C exceptions and fatal
+/// signals to the app log file *before* the process dies, so a crash on an
+/// unattended wall leaves a trace (in addition to the macOS crash report).
+///
+/// Note: this cannot catch out-of-memory (jetsam / SIGKILL) terminations — for
+/// those, check `~/Library/Logs/DiagnosticReports/` for a JetsamEvent report.
+enum CrashReporter {
+    private static var installed = false
+    private static var logFD: Int32 = -1
+    private static let maxFrames = 128
+    // Pre-allocated so the signal handler never has to allocate memory.
+    private static let frameBuffer = UnsafeMutablePointer<UnsafeMutableRawPointer?>.allocate(capacity: maxFrames)
+    private static let signalHeader = strdup("\n===== FATAL SIGNAL — backtrace follows (see also the macOS crash report) =====\n")
+
+    static func install(logFileURL: URL) {
+        guard !installed else { return }
+        installed = true
+        logFD = open(logFileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+
+        NSSetUncaughtExceptionHandler { exception in
+            var text = "\n===== UNCAUGHT EXCEPTION =====\n"
+            text += "name: \(exception.name.rawValue)\n"
+            text += "reason: \(exception.reason ?? "(none)")\n"
+            text += "stack:\n" + exception.callStackSymbols.joined(separator: "\n") + "\n"
+            CrashReporter.writeRaw(text)
+        }
+
+        for sig in [SIGABRT, SIGILL, SIGSEGV, SIGBUS, SIGFPE, SIGTRAP] {
+            signal(sig, CrashReporter.signalHandler)
+        }
+    }
+
+    // C signal handler — must avoid allocations / non-async-signal-safe calls.
+    private static let signalHandler: @convention(c) (Int32) -> Void = { sig in
+        if let header = CrashReporter.signalHeader {
+            _ = write(CrashReporter.logFD, header, strlen(header))
+        }
+        let count = backtrace(CrashReporter.frameBuffer, Int32(CrashReporter.maxFrames))
+        backtrace_symbols_fd(CrashReporter.frameBuffer, count, CrashReporter.logFD)
+        // Re-raise with the default handler so macOS still writes its crash report.
+        signal(sig, SIG_DFL)
+        raise(sig)
+    }
+
+    private static func writeRaw(_ string: String) {
+        guard logFD >= 0 else { return }
+        string.withCString { _ = write(logFD, $0, strlen($0)) }
+    }
+}
