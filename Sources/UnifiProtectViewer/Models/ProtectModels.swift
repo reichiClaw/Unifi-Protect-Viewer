@@ -84,7 +84,14 @@ struct ProtectCamera: Decodable, Identifiable, Hashable {
     }
 
     var isOnline: Bool {
-        (isConnected ?? false) || (state?.lowercased() == "connected")
+        // Manual/custom streams are always considered online.
+        if directURL != nil { return true }
+        // Treat as offline if *either* indicator reports not-connected, so a
+        // camera that drops is reflected promptly. (Previously used OR, which
+        // kept a camera "online" if only one of the two fields had updated.)
+        if isConnected == false { return false }
+        if let s = state, s.caseInsensitiveCompare("connected") != .orderedSame { return false }
+        return true
     }
 
     static func == (lhs: ProtectCamera, rhs: ProtectCamera) -> Bool { lhs.id == rhs.id }

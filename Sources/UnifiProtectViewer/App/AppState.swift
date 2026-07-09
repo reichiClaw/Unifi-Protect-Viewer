@@ -88,8 +88,14 @@ final class AppState: ObservableObject {
     private func pollCameraStatus() {
         guard connectionState == .connected else { return }
         Task {
-            guard let fetched = try? await apiClient.fetchCameras(), !fetched.isEmpty else { return }
-            await MainActor.run { self.refreshCameraStatus(fetched) }
+            do {
+                let fetched = try await apiClient.fetchCameras()
+                guard !fetched.isEmpty else { return }
+                await MainActor.run { self.refreshCameraStatus(fetched) }
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                appLog("Camera status poll failed: \(message)", .warn)
+            }
         }
     }
 
@@ -99,7 +105,10 @@ final class AppState: ObservableObject {
         var changed = false
         var map = camerasByID
         for cam in fetched where map[cam.id] != nil {
-            if map[cam.id]?.isOnline != cam.isOnline { changed = true }
+            if let old = map[cam.id], old.isOnline != cam.isOnline {
+                changed = true
+                appLog("Camera \"\(cam.displayName)\" is now \(cam.isOnline ? "online" : "offline") (state=\(cam.state ?? "?"), connected=\(cam.isConnected.map(String.init) ?? "?"))")
+            }
             map[cam.id] = cam
         }
         camerasByID = map
