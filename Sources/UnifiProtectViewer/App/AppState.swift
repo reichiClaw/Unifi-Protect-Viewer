@@ -43,6 +43,7 @@ final class AppState: ObservableObject {
     private var lastStatusFetch = Date.distantPast
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
+    private var lastMemWarning = Date.distantPast
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -105,6 +106,17 @@ final class AppState: ObservableObject {
         let summary = CameraPlayerManager.shared.playbackSummary()
         appLog(String(format: "Stats: cpu=%.0f%% (%d cores → %d%% max) mem=%.0fMB | %@",
                       cpu, cores, cores * 100, mem, summary))
+
+        // Early warning as memory climbs toward a level where macOS may kill the
+        // app (jetsam). Throttled so it doesn't spam the log.
+        let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / 1024.0 / 1024.0
+        let ratio = physicalMB > 0 ? mem / physicalMB : 0
+        if ratio >= 0.4, Date().timeIntervalSince(lastMemWarning) >= 60 {
+            lastMemWarning = Date()
+            appLog(String(format: "High memory: %.0fMB (%.0f%% of %.1fGB). Reduce load: set Grid quality = Low or use fewer tiles per view. Off-screen streams are freed automatically.",
+                          mem, ratio * 100, physicalMB / 1024.0),
+                   ratio >= 0.6 ? .error : .warn)
+        }
     }
 
     /// Timer tick; only actually hits the API when needed.
