@@ -44,6 +44,11 @@ final class AppState: ObservableObject {
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
     private var lastMemWarning = Date.distantPast
+    /// Safety: auto-stop continuous PTZ movement if a "stop" is never received
+    /// (e.g. a missed button release or a dropped request), so the camera can't
+    /// run away.
+    private var ptzSafetyStop: DispatchWorkItem?
+    private let ptzMaxMoveSeconds: TimeInterval = 4
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -482,6 +487,48 @@ final class AppState: ObservableObject {
         return camerasByID[id]
     }
 
+    // MARK: - PTZ continuous move (hold-to-move)
+
+    /// Start/adjust or stop continuous PTZ movement. `dx`/`dy`/`dz` are
+    /// direction hints in {-1, 0, 1}: dx = pan (+right/-left), dy = tilt
+    /// (+up/-down), dz = zoom (+out/-in). All zero = stop. The camera keeps
+    /// moving until stopped, so callers send a non-zero move on press and a zero
+    /// move on release; a safety timer also auto-stops after a few seconds.
+    @discardableResult
+    func ptzMove(cameraID: String?, dx: Int, dy: Int, dz: Int) -> Bool {
+        let cam = cameraID.flatMap { camerasByID[$0] } ?? fullscreenCamera
+        guard let cam = cam else { return false }
+        let id = cam.id
+        let speed = ProtectAPIClient.ptzMoveSpeed
+        let x = dx.signum() * speed
+        let y = dy.signum() * speed
+        let z = dz.signum() * speed
+        let moving = (x != 0 || y != 0 || z != 0)
+
+        ptzSafetyStop?.cancel(); ptzSafetyStop = nil
+
+        Task { [apiClient] in
+            do {
+                try await apiClient.ptzMove(cameraID: id, x: x, y: y, z: z)
+            } catch {
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                appLog("PTZ move failed: \(message)", .error)
+            }
+        }
+
+        if moving {
+            let work = DispatchWorkItem { [weak self] in
+                guard let self = self else { return }
+                self.ptzSafetyStop = nil
+                appLog("PTZ safety auto-stop after \(Int(self.ptzMaxMoveSeconds))s", .warn)
+                Task { [apiClient = self.apiClient] in try? await apiClient.ptzStop(cameraID: id) }
+            }
+            ptzSafetyStop = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + ptzMaxMoveSeconds, execute: work)
+        }
+        return true
+    }
+
     // MARK: - Control server
 
     func startControlServerIfNeeded() {
@@ -580,6 +627,12 @@ extension AppState: ControlServerHandler {
     }
 
     func controlReconnect() { reconnect() }
+
+    func controlPTZMove(cameraID: String?, index: Int?, name: String?, dx: Int, dy: Int, dz: Int) -> Bool {
+        let cam = resolveCamera(id: cameraID, index: index, name: name) ?? fullscreenCamera
+        guard let cam = cam else { return false }
+        return ptzMove(cameraID: cam.id, dx: dx, dy: dy, dz: dz)
+    }
 
     func controlPTZ(cameraID: String?, index: Int?, name: String?, action: String, slot: Int) -> Bool {
         // Default to the camera currently shown fullscreen, so Stream Deck PTZ

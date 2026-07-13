@@ -52,4 +52,5 @@ protocol ControlServerHandler: AnyObject {
     /// PTZ control. `action` is one of: "goto", "home", "patrol-start",
     /// "patrol-stop". `slot` is the preset/patrol slot (ignored for stop/home).
     func controlPTZ(cameraID: String?, index: Int?, name: String?, action: String, slot: Int) -> Bool
+    func controlPTZMove(cameraID: String?, index: Int?, name: String?, dx: Int, dy: Int, dz: Int) -> Bool
 }

@@ -67,17 +67,22 @@ Button titles automatically update to show the active view / fullscreen camera.
 | PTZ: Home | Move the current fullscreen PTZ camera to its home position |
 | PTZ: Start Patrol | Start a patrol (tour) on the current fullscreen PTZ camera |
 | PTZ: Stop Patrol | Stop the active patrol |
+| PTZ: Tilt Up / Down | **Hold** to tilt the current fullscreen PTZ camera; release to stop |
+| PTZ: Pan Left / Right | **Hold** to pan the current fullscreen PTZ camera; release to stop |
+| PTZ: Zoom In / Out | **Hold** to zoom the current fullscreen PTZ camera; release to stop |
 
 ## PTZ control
 
 ### Easiest: on-screen controls (no Stream Deck needed)
 
 When you open a **PTZ camera** fullscreen in the app, a control bar appears at
-the bottom with **Home**, numbered **preset** buttons, and **patrol start/stop**
-— just click them. The number of preset buttons is configurable in
-**Settings → Connection → Behavior → “On-screen PTZ preset buttons.”** Preset
-buttons are labelled `1…N` and map to the camera's zero-based preset slots
-(button *n* → slot *n-1*).
+the bottom with a **hold-to-move D-pad** (pan/tilt), **zoom in/out**, **Home**,
+numbered **preset** buttons, and **patrol start/stop**. Press and hold an arrow
+or zoom button to move; release to stop (a safety timer also auto-stops after a
+few seconds if a release is ever missed). The number of preset buttons is
+configurable in **Settings → Connection → Behavior → “On-screen PTZ preset
+buttons.”** Preset buttons are labelled `1…N` and map to the camera's zero-based
+preset slots (button *n* → slot *n-1*).
 
 ### Stream Deck PTZ actions
 
@@ -86,6 +91,11 @@ fullscreen** in the app — so a single set of PTZ buttons works for every PTZ
 camera. Each PTZ action just needs the **Host/Port/Token**; *Preset* and
 *Patrol* also take a **slot** number (0 = the first saved preset/patrol; the
 *Home* action uses the home position).
+
+The **Tilt/Pan/Zoom** actions are **hold-to-move**: the camera moves while you
+hold the key and stops when you release it (the app also auto-stops after a few
+seconds as a safety net). Place Up/Down/Left/Right/Zoom-In/Zoom-Out keys in a
+cluster for a joystick-like layout.
 
 ### Auto-switch to a PTZ page when a PTZ camera is fullscreen
 
@@ -138,6 +148,7 @@ parameter, or a `token` field in the JSON body.
 | POST | `/api/exit-fullscreen` | — |
 | POST | `/api/reconnect` | — |
 | POST | `/api/ptz` | `{ "action": "goto"\|"home"\|"patrol-start"\|"patrol-stop", "slot"?, "cameraId"?/"index"?/"name"? }` (no camera → current fullscreen) |
+| POST | `/api/ptz-move` | `{ "dx"?, "dy"?, "dz"?, "cameraId"?/"index"?/"name"? }` — continuous move: dx=pan(+right/-left), dy=tilt(+up/-down), dz=zoom(+out/-in); all `0` = stop (no camera → current fullscreen) |
 
 `index` for `fullscreen` is relative to the **current view's** camera list, then
 falls back to the global camera list.

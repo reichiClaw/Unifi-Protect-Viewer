@@ -232,6 +232,29 @@ actor ProtectAPIClient {
         _ = try await authedRequest(path: "/proxy/protect/integration/v1/cameras/\(cameraID)/ptz/patrol/stop", method: "POST")
     }
 
+    /// Full-speed continuous-move velocity magnitude (matches the UniFi web UI /
+    /// third-party drivers). Direction is carried by the sign.
+    static let ptzMoveSpeed = 750
+
+    /// Continuous PTZ move on the **internal** API (the same endpoint the web UI
+    /// uses). `x` = pan (+right/-left), `y` = tilt (+up/-down), `z` = zoom
+    /// (+out/-in). The camera keeps moving until `ptzStop(...)` is sent, so this
+    /// is a hold-to-move control. Requires the `Origin` header (unlike our other
+    /// calls) to be accepted by the controller.
+    func ptzMove(cameraID: String, x: Int, y: Int, z: Int) async throws {
+        let payload: [String: Any] = ["x": x, "y": y, "z": z]
+        let body = try JSONSerialization.data(withJSONObject: ["type": "continuous", "payload": payload])
+        _ = try await authedRequest(path: "/proxy/protect/api/cameras/\(cameraID)/move",
+                                    method: "POST",
+                                    body: body,
+                                    extraHeaders: ["Origin": "https://\(host)"])
+    }
+
+    /// Stop any continuous PTZ movement (pan/tilt/zoom).
+    func ptzStop(cameraID: String) async throws {
+        try await ptzMove(cameraID: cameraID, x: 0, y: 0, z: 0)
+    }
+
     // MARK: - Stream URLs
 
     nonisolated static func streamURL(host: String,
@@ -262,13 +285,14 @@ actor ProtectAPIClient {
 
     // MARK: - Helpers
 
-    private func authedRequest(path: String, method: String, body: Data? = nil) async throws -> Data {
+    private func authedRequest(path: String, method: String, body: Data? = nil, extraHeaders: [String: String] = [:]) async throws -> Data {
         guard !host.isEmpty else { throw ProtectAPIError.notConfigured }
         guard let url = URL(string: "https://\(host)\(path)") else { throw ProtectAPIError.invalidHost }
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         applyAuth(to: &request)
+        for (key, value) in extraHeaders { request.setValue(value, forHTTPHeaderField: key) }
         if let body = body {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = body

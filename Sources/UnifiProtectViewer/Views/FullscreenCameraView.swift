@@ -146,17 +146,21 @@ struct FullscreenCameraView: View {
 
     // MARK: PTZ controls
 
-    /// Floating control bar for a PTZ camera: home, saved presets, and patrol.
-    /// Preset buttons are labelled 1…N but map to zero-based slots (button *n*
-    /// = slot *n-1*), matching the camera's saved preset positions.
+    /// Floating control bar for a PTZ camera: a hold-to-move D-pad, zoom, home,
+    /// saved presets, and patrol. Preset buttons are labelled 1…N but map to
+    /// zero-based slots (button *n* = slot *n-1*).
     private var ptzPanel: some View {
-        HStack(spacing: 10) {
+        HStack(alignment: .center, spacing: 14) {
+            dPad
+            zoomControls
+
+            Divider().frame(height: 44)
+
             ptzButton(system: "house.fill", help: "Home position") {
                 sendPTZ(action: "home", slot: 0)
             }
 
             if appState.config.ptzPresetCount > 0 {
-                Divider().frame(height: 22)
                 ForEach(1...appState.config.ptzPresetCount, id: \.self) { n in
                     Button("\(n)") { sendPTZ(action: "goto", slot: n - 1) }
                         .buttonStyle(.bordered)
@@ -165,7 +169,7 @@ struct FullscreenCameraView: View {
                 }
             }
 
-            Divider().frame(height: 22)
+            Divider().frame(height: 44)
             ptzButton(system: "play.fill", help: "Start patrol") {
                 sendPTZ(action: "patrol-start", slot: 0)
             }
@@ -180,6 +184,43 @@ struct FullscreenCameraView: View {
         .padding(.bottom, 16)
     }
 
+    /// Hold-to-move pan/tilt cross.
+    private var dPad: some View {
+        Grid(horizontalSpacing: 4, verticalSpacing: 4) {
+            GridRow {
+                dPadSpacer
+                holdMove(dx: 0, dy: 1, system: "chevron.up", help: "Tilt up")
+                dPadSpacer
+            }
+            GridRow {
+                holdMove(dx: -1, dy: 0, system: "chevron.left", help: "Pan left")
+                dPadSpacer
+                holdMove(dx: 1, dy: 0, system: "chevron.right", help: "Pan right")
+            }
+            GridRow {
+                dPadSpacer
+                holdMove(dx: 0, dy: -1, system: "chevron.down", help: "Tilt down")
+                dPadSpacer
+            }
+        }
+    }
+
+    private var dPadSpacer: some View { Color.clear.frame(width: 30, height: 26) }
+
+    /// Hold-to-zoom controls (in = closer, out = wider).
+    private var zoomControls: some View {
+        VStack(spacing: 4) {
+            holdMove(dz: -1, system: "plus.magnifyingglass", help: "Zoom in")
+            holdMove(dz: 1, system: "minus.magnifyingglass", help: "Zoom out")
+        }
+    }
+
+    private func holdMove(dx: Int = 0, dy: Int = 0, dz: Int = 0, system: String, help: String) -> some View {
+        PTZHoldButton(system: system, help: help,
+                      onPress: { appState.ptzMove(cameraID: camera.id, dx: dx, dy: dy, dz: dz) },
+                      onRelease: { appState.ptzMove(cameraID: camera.id, dx: 0, dy: 0, dz: 0) })
+    }
+
     private func ptzButton(system: String, help: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: system)
@@ -191,6 +232,37 @@ struct FullscreenCameraView: View {
 
     private func sendPTZ(action: String, slot: Int) {
         _ = appState.controlPTZ(cameraID: camera.id, index: nil, name: nil, action: action, slot: slot)
+    }
+}
+
+/// A button that fires `onPress` the moment it's pressed and `onRelease` when
+/// released — used for hold-to-move PTZ controls (move while held, stop on
+/// release). A plain SwiftUI `Button` only reports a completed click, so we use
+/// a zero-distance drag gesture to get down/up events.
+private struct PTZHoldButton: View {
+    let system: String
+    let help: String
+    let onPress: () -> Void
+    let onRelease: () -> Void
+    @State private var pressing = false
+
+    var body: some View {
+        Image(systemName: system)
+            .font(.system(size: 13, weight: .semibold))
+            .frame(width: 30, height: 26)
+            .background(pressing ? Color.accentColor.opacity(0.6) : Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: 7))
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if !pressing { pressing = true; onPress() }
+                    }
+                    .onEnded { _ in
+                        pressing = false; onRelease()
+                    }
+            )
+            .help(help)
     }
 }
 

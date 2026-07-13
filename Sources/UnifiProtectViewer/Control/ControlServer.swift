@@ -106,6 +106,7 @@ final class ControlServer {
         server.POST["/api/exit-fullscreen"] = { [weak self] req in self?.handleSimple(req) { $0.controlExitFullscreen() } ?? .internalServerError }
         server.POST["/api/reconnect"] = { [weak self] req in self?.handleSimple(req) { $0.controlReconnect() } ?? .internalServerError }
         server.POST["/api/ptz"] = { [weak self] req in self?.handlePTZ(req) ?? .internalServerError }
+        server.POST["/api/ptz-move"] = { [weak self] req in self?.handlePTZMove(req) ?? .internalServerError }
 
         server["/ws"] = websocket(
             text: { [weak self] session, text in
@@ -177,6 +178,22 @@ final class ControlServer {
         let ok = DispatchQueue.main.sync { [weak self] () -> Bool in
             guard let handler = self?.handler else { return false }
             return handler.controlPTZ(cameraID: cameraId, index: index, name: name, action: action, slot: slot)
+        }
+        return finish(ok: ok, message: ok ? nil : "Camera not found")
+    }
+
+    private func handlePTZMove(_ req: HttpRequest) -> HttpResponse {
+        guard authorize(req) else { return unauthorized() }
+        let params = parseParams(req)
+        let cameraId = (params["cameraId"] as? String) ?? (params["cameraID"] as? String)
+        let index = intParam(params["index"])
+        let name = params["name"] as? String
+        let dx = intParam(params["dx"]) ?? 0
+        let dy = intParam(params["dy"]) ?? 0
+        let dz = intParam(params["dz"]) ?? 0
+        let ok = DispatchQueue.main.sync { [weak self] () -> Bool in
+            guard let handler = self?.handler else { return false }
+            return handler.controlPTZMove(cameraID: cameraId, index: index, name: name, dx: dx, dy: dy, dz: dz)
         }
         return finish(ok: ok, message: ok ? nil : "Camera not found")
     }
