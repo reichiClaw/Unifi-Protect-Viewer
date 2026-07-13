@@ -40,6 +40,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var caching = 1500
         var muted = true
         var online = true
+        var hardwareDecoding = true
         // Watchdog bookkeeping.
         var startedAt = Date()
         var lastHealthyAt = Date.distantPast
@@ -93,12 +94,13 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         entry(for: id).status
     }
 
-    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool, online: Bool) {
+    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool, online: Bool, hardwareDecoding: Bool) {
         let e = entry(for: id)
         e.stopWork?.cancel(); e.stopWork = nil
         e.idleSince = nil
         e.caching = caching
         e.muted = muted
+        e.hardwareDecoding = hardwareDecoding
 
         if e.surface.superview !== host {
             e.surface.removeFromSuperview()
@@ -196,13 +198,25 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.reportedFailure = false
     }
 
-    private func makeMedia(url: URL, caching: Int) -> VLCMedia {
+    private func makeMedia(url: URL, caching: Int, hardwareDecoding: Bool) -> VLCMedia {
         let media = VLCMedia(url: url)
         media.addOption(":network-caching=\(caching)")
         media.addOption(":live-caching=\(caching)")
         media.addOption(":rtsp-tcp")
         media.addOption(":rtsp-frame-buffer-size=1000000")
         media.addOption(":no-audio")
+        // Hardware decoding: offload H.264/H.265 decode to Apple's VideoToolbox
+        // (dedicated silicon) instead of the CPU. Cuts CPU load and the memory
+        // used by software decode buffers — the main win on low-RAM Macs. When
+        // disabled, force software decoding so a problematic stream can still
+        // render (some cameras trip up VideoToolbox with artifacts).
+        if hardwareDecoding {
+            media.addOption(":avcodec-hw=videotoolbox")
+            media.addOption(":videotoolbox=1")
+        } else {
+            media.addOption(":avcodec-hw=none")
+            media.addOption(":videotoolbox=0")
+        }
         return media
     }
 
@@ -222,6 +236,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.startedAt = now
         e.announcedPlaying = false
         let caching = e.caching
+        let hardwareDecoding = e.hardwareDecoding
         // Global stagger.
         let at = max(now, nextStartAt)
         nextStartAt = at.addingTimeInterval(startStagger)
@@ -229,7 +244,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
         let play: () -> Void = { [weak self, weak e] in
             guard let self = self, let e = e, e.hostedIn != nil else { return }
-            e.player.media = self.makeMedia(url: url, caching: caching)
+            e.player.media = self.makeMedia(url: url, caching: caching, hardwareDecoding: hardwareDecoding)
             e.player.play()
         }
 
@@ -394,15 +409,16 @@ struct CameraVideoView: NSViewRepresentable {
     var caching: Int = 1500
     var muted: Bool = true
     var online: Bool = true
+    var hardwareDecoding: Bool = true
 
     func makeNSView(context: Context) -> HostView {
         let host = HostView()
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
         return host
     }
 
     func updateNSView(_ host: HostView, context: Context) {
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
     }
 
     static func dismantleNSView(_ host: HostView, coordinator: Void) {
@@ -417,6 +433,7 @@ final class HostView: NSView {
     private var caching = 1500
     private var muted = true
     private var online = true
+    private var hardwareDecoding = true
 
     init() {
         super.init(frame: .zero)
@@ -431,7 +448,7 @@ final class HostView: NSView {
     // tile or the fullscreen video is reliably received).
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool) {
+    func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool, hardwareDecoding: Bool) {
         if self.cameraID != cameraID, !self.cameraID.isEmpty {
             CameraPlayerManager.shared.detach(cameraID: self.cameraID, from: self)
         }
@@ -440,6 +457,7 @@ final class HostView: NSView {
         self.caching = caching
         self.muted = muted
         self.online = online
+        self.hardwareDecoding = hardwareDecoding
         if window != nil { attachIfPossible() }
     }
 
@@ -454,6 +472,6 @@ final class HostView: NSView {
 
     private func attachIfPossible() {
         guard let url = url, !cameraID.isEmpty else { return }
-        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted, online: online)
+        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
     }
 }

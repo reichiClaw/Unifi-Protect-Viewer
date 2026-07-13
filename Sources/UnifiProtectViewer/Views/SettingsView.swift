@@ -149,6 +149,7 @@ private struct ConnectionSettingsTab: View {
     @State private var fullscreenQuality: StreamQuality = .high
     @State private var mfaCode: String = ""
     @State private var cacheMs: Double = 1500
+    @State private var hardwareDecoding: Bool = true
 
     var body: some View {
         Form {
@@ -175,6 +176,7 @@ private struct ConnectionSettingsTab: View {
                 }
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
                 Toggle("Auto-enable RTSP on cameras", isOn: $autoEnableRTSP)
+                Toggle("Hardware decoding (VideoToolbox)", isOn: $hardwareDecoding)
                 VStack(alignment: .leading) {
                     Text("Buffer: \(Int(cacheMs)) ms")
                     Slider(value: $cacheMs, in: 300...5000, step: 100)
@@ -182,7 +184,7 @@ private struct ConnectionSettingsTab: View {
             } header: {
                 Text("Streaming")
             } footer: {
-                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). A higher **Fullscreen quality** gives a crisp single-camera view.\n\n**Memory/CPU:** each grid tile decodes a live stream, and RAM use scales with resolution. On machines with 8 GB or many cameras, set **Grid quality = Low** (640×360) — this is by far the biggest way to cut memory and prevent freezes. A larger **Buffer** adds latency but is more resilient on a 24/7 wall (≈1500–2500 ms).")
+                Text("Leave RTSPS **off** — the encrypted stream uses the controller's self-signed certificate, which the video engine can't verify, so it fails (the app falls back to plain RTSP automatically). A higher **Fullscreen quality** gives a crisp single-camera view.\n\n**Hardware decoding** offloads video decode to the Mac's VideoToolbox engine, cutting CPU and memory use — keep it **on** for low-RAM machines and only disable it if a stream shows decode artifacts.\n\n**Memory/CPU:** each grid tile decodes a live stream, and RAM use scales with resolution. On machines with 8 GB or many cameras, set **Grid quality = Low** (640×360) — this is by far the biggest way to cut memory and prevent freezes. A larger **Buffer** adds latency but is more resilient on a 24/7 wall (≈1500–2500 ms).\n\nQuality, buffer and decoding changes apply when a stream next (re)connects — reconnect or restart to apply them everywhere.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
@@ -232,6 +234,7 @@ private struct ConnectionSettingsTab: View {
         gridQuality = c.gridQuality
         fullscreenQuality = c.fullscreenQuality
         cacheMs = Double(c.streamCacheMs)
+        hardwareDecoding = c.hardwareDecoding
         password = appState.storedPassword ?? ""
     }
 
@@ -246,6 +249,7 @@ private struct ConnectionSettingsTab: View {
         c.fullscreenQuality = fullscreenQuality
         c.defaultQuality = gridQuality // keep legacy field in sync
         c.streamCacheMs = Int(cacheMs)
+        c.hardwareDecoding = hardwareDecoding
         return c
     }
 

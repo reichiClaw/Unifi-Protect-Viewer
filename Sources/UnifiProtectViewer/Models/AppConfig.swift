@@ -25,6 +25,11 @@ struct ConnectionSettings: Codable, Equatable {
     /// Network/jitter buffer in milliseconds. Higher = more latency but more
     /// resilient to network hiccups (recommended for a 24/7 wall).
     var streamCacheMs: Int = 1500
+    /// Use the Mac's VideoToolbox hardware decoder instead of software decoding.
+    /// Offloads H.264/H.265 decode to dedicated silicon — big CPU savings and
+    /// lower memory pressure on low-RAM machines. Turn off only if a stream
+    /// shows decode artifacts.
+    var hardwareDecoding: Bool = true
 
     init() {}
 
@@ -42,6 +47,7 @@ struct ConnectionSettings: Codable, Equatable {
         autoEnableRTSP = try c.decodeIfPresent(Bool.self, forKey: .autoEnableRTSP) ?? true
         autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
         streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
+        hardwareDecoding = try c.decodeIfPresent(Bool.self, forKey: .hardwareDecoding) ?? true
     }
 
     var isComplete: Bool {

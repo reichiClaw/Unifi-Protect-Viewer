@@ -35,7 +35,8 @@ struct CameraTileView: View {
                 CameraVideoView(cameraID: camera.id,
                                 url: url,
                                 caching: appState.config.connection.streamCacheMs,
-                                online: camera.isOnline)
+                                online: camera.isOnline,
+                                hardwareDecoding: appState.config.connection.hardwareDecoding)
             } else {
                 noStreamPlaceholder
             }

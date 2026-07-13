@@ -129,6 +129,13 @@ channel based on the requested quality (High/Medium/Low), and plays it with
 VLCKit. Controllers use self-signed certificates, so HTTPS trust is pinned to the
 host you configured (see `Networking/InsecureTrust.swift`).
 
+By default streams are decoded with the Mac's **VideoToolbox hardware decoder**,
+which offloads H.264/H.265 decoding to dedicated silicon — noticeably lower CPU
+and memory use, which matters most on 8 GB machines or large camera walls. You
+can toggle this in **Settings → Connection → Streaming** (turn it off only if a
+particular stream shows decode artifacts). The change applies the next time a
+stream (re)connects.
+
 ---
 
 ## Security notes

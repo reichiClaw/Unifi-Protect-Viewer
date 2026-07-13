@@ -157,8 +157,9 @@ See the main [README](../README.md) for using views/fullscreen and
 | App won't open (Gatekeeper) on another Mac | For local dev, right-click → Open. For distribution you must codesign/notarize. |
 | Self-signed cert errors | Expected for UniFi controllers; trust is pinned to your configured host automatically. |
 | Tiles error immediately with `rtsps://…:7441` URLs | RTSPS (TLS) isn't supported by the video engine against UniFi's self-signed cert. Turn **off** "Use RTSPS" in Settings (plain RTSP on 7447). The app also auto-falls back to RTSP on failure. |
-| Very high CPU / choppy video with many cameras | Each tile decodes a live stream; 4K×many is heavy. Set default quality (or a per-view quality) to **Low**/**Medium**. |
-| Freezes / beachball from high **memory** use (esp. 8 GB Macs) | Decoded-frame RAM scales with resolution. Set **Grid quality = Low** (640×360) — the single biggest reduction. The app also frees a stream's buffers when it scrolls off-screen and fully evicts players idle >60 s. Keep the buffer moderate (≈1500 ms) and prefer fewer very-high-res tiles; use Fullscreen (High) for detail on demand. |
+| Very high CPU / choppy video with many cameras | Each tile decodes a live stream; 4K×many is heavy. Set default quality (or a per-view quality) to **Low**/**Medium**, and keep **Hardware decoding (VideoToolbox)** on in Settings → Connection → Streaming so decode runs on dedicated silicon instead of the CPU. |
+| Freezes / beachball from high **memory** use (esp. 8 GB Macs) | Decoded-frame RAM scales with resolution. Set **Grid quality = Low** (640×360) — the single biggest reduction. Keep **Hardware decoding** on so decode offloads to VideoToolbox (less CPU + lower memory pressure). The app also frees a stream's buffers when it scrolls off-screen and fully evicts players idle >60 s. Keep the buffer moderate (≈1500 ms) and prefer fewer very-high-res tiles; use Fullscreen (High) for detail on demand. |
+| Green/garbled blocks or decode artifacts on some streams | Turn **Hardware decoding (VideoToolbox)** off in Settings to fall back to software decoding for that camera; then reconnect. |
 | Crash on launch referencing VLCKit | Reset package caches; ensure the VLCKit (vlckit-spm) package finished downloading. |
 
 ## Notes on distribution

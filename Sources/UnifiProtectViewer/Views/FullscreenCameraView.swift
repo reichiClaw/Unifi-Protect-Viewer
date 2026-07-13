@@ -31,7 +31,8 @@ struct FullscreenCameraView: View {
                 UpgradeVideoLayer(streamKey: camera.id + "#fs",
                                   url: highURL,
                                   caching: appState.config.connection.streamCacheMs,
-                                  online: camera.isOnline)
+                                  online: camera.isOnline,
+                                  hardwareDecoding: appState.config.connection.hardwareDecoding)
                     .id(camera.id)
                     .allowsHitTesting(false)
             }
@@ -141,18 +142,20 @@ private struct UpgradeVideoLayer: View {
     let url: URL
     let caching: Int
     let online: Bool
+    let hardwareDecoding: Bool
     @ObservedObject private var status: CameraPlaybackStatus
 
-    init(streamKey: String, url: URL, caching: Int, online: Bool) {
+    init(streamKey: String, url: URL, caching: Int, online: Bool, hardwareDecoding: Bool) {
         self.streamKey = streamKey
         self.url = url
         self.caching = caching
         self.online = online
+        self.hardwareDecoding = hardwareDecoding
         _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: streamKey))
     }
 
     var body: some View {
-        CameraVideoView(cameraID: streamKey, url: url, caching: caching, online: online)
+        CameraVideoView(cameraID: streamKey, url: url, caching: caching, online: online, hardwareDecoding: hardwareDecoding)
             .opacity(status.state == .playing ? 1 : 0)
             .animation(.easeIn(duration: 0.25), value: status.state)
     }
