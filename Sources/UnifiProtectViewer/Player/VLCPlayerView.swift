@@ -221,7 +221,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private func start(_ e: Entry) {
-        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "")", .debug)
+        let decode = e.hardwareDecoding ? "hardware (VideoToolbox)" : "software"
+        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "") [decode: \(decode)]", .debug)
         launch(e, stopFirst: false)
     }
 
@@ -382,7 +383,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.reportedFailure = false
             if !e.announcedPlaying {
                 e.announcedPlaying = true
-                appLog("Player[\(e.id)]: PLAYING", .debug)
+                let decode = e.hardwareDecoding ? "hardware (VideoToolbox)" : "software"
+                appLog("Player[\(e.id)]: PLAYING [decode: \(decode)]", .debug)
             }
             setStatus(e, .playing)
         case .buffering, .opening:
