@@ -98,6 +98,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var hardwareDecoding = true
         // Watchdog bookkeeping.
         var startedAt = Date()
+        /// When the current `VLCMediaPlayer` object was created — used to
+        /// periodically recreate it and shed slow libvlc leaks/drift.
+        var playerCreatedAt = Date()
         var lastHealthyAt = Date.distantPast
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
@@ -113,6 +116,10 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private var entries: [String: Entry] = [:]
+    /// Camera IDs whose (grid-quality) decode is temporarily suppressed because
+    /// a higher-quality fullscreen twin is covering them — avoids decoding the
+    /// same camera twice while fullscreen (a real memory spike on low-RAM Macs).
+    private var shadowed: Set<String> = []
     /// Called (on the main thread) when a hosted, online camera's stream has
     /// been failing to play for a while — so the app can check the controller
     /// to distinguish "camera offline" from a transient stream problem.
@@ -133,10 +140,19 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Fully release (deallocate) a player that has been off-screen this long,
     /// to free its decoder/network buffers — important on low-RAM machines.
     private let evictionSeconds: TimeInterval = 60
+    /// Recreate a continuously-running player object after this long, to shed
+    /// slow memory drift/leaks inside libvlc over multi-day (24/7) uptime.
+    private let maxPlayerLifetime: TimeInterval = 4 * 3600
     /// Captures libvlc's log so we can report the actual decoder per stream.
     /// Held strongly here (the singleton lives for the app's lifetime).
     private let vlcLogger = VLCDecodeLogger()
     private var vlcLoggerInstalled = false
+    /// Watches system memory pressure so we can shed off-screen decoders before
+    /// macOS resorts to killing us (jetsam) — the biggest crash risk on 8 GB.
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    /// Called (main thread) on a memory-pressure warning/critical event so the
+    /// app can log it / react. `true` = critical.
+    var onMemoryPressure: ((Bool) -> Void)?
 
     override init() {
         super.init()
@@ -145,6 +161,32 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         watchdog = timer
+        installMemoryPressureMonitor()
+    }
+
+    // MARK: Memory pressure
+
+    private func installMemoryPressureMonitor() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let critical = source.data.contains(.critical)
+            self.handleMemoryPressure(critical: critical)
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    /// Free every off-screen player immediately (don't wait for the idle timer),
+    /// so the OS reclaims that RAM instead of killing the process.
+    private func handleMemoryPressure(critical: Bool) {
+        let offscreen = entries.values.filter { $0.hostedIn == nil }.map { $0.id }
+        for id in offscreen { evict(id) }
+        let mem = SystemStats.memoryFootprintMB()
+        appLog(String(format: "Memory pressure %@ — evicted %d off-screen stream(s) to free RAM (footprint %.0fMB)",
+                      critical ? "CRITICAL" : "warning", offscreen.count, mem),
+               critical ? .error : .warn)
+        onMemoryPressure?(critical)
     }
 
     // MARK: Public API (main thread)
@@ -184,6 +226,15 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         let cameBackOnline = !e.online
         e.online = true
 
+        // Suppressed while a fullscreen high-quality twin covers this camera:
+        // keep the surface parented but don't run the grid-quality decoder.
+        // (Idempotent so SwiftUI re-renders can't accidentally restart it.)
+        if shadowed.contains(id) {
+            e.requestedURL = url
+            e.activeURL = url
+            return
+        }
+
         if e.requestedURL != url || cameBackOnline {
             e.requestedURL = url
             e.activeURL = url
@@ -218,6 +269,30 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         for (_, e) in entries {
             e.stopWork?.cancel(); e.stopWork = nil
             stop(e)
+        }
+    }
+
+    /// Suppress (or resume) a camera's grid-quality decode while a fullscreen
+    /// high-quality twin is on screen. Called on the main thread.
+    func setShadowed(cameraID id: String, _ on: Bool) {
+        if on {
+            guard !shadowed.contains(id) else { return }
+            shadowed.insert(id)
+            if let e = entries[id] {
+                e.controlQueue.async {
+                    e.player.stop()
+                    e.player.media = nil
+                }
+                appLog("Player[\(id)]: grid decode suspended (covered by fullscreen HQ stream)", .debug)
+            }
+        } else {
+            guard shadowed.remove(id) != nil else { return }
+            // Resume grid-quality playback if the tile is still on screen.
+            if let e = entries[id], e.hostedIn != nil, e.online {
+                resetHealth(e)
+                start(e)
+                appLog("Player[\(id)]: grid decode resumed", .debug)
+            }
         }
     }
 
@@ -341,6 +416,25 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
     }
 
+    /// Replace an entry's `VLCMediaPlayer` with a fresh object, reusing the same
+    /// video surface. Clears libvlc-internal state/leaks that `stop()` +
+    /// `media = nil` don't — used both for periodic maintenance and to break an
+    /// error loop that restarting the same player can't. Caller then `launch`es.
+    private func recreatePlayer(_ e: Entry) {
+        let old = e.player
+        old.delegate = nil
+        old.drawable = nil
+        let fresh = VLCMediaPlayer()
+        fresh.drawable = e.surface
+        fresh.delegate = self
+        e.player = fresh
+        e.playerCreatedAt = Date()
+        e.controlQueue.async {
+            old.stop()
+            old.media = nil
+        }
+    }
+
     /// Fully release an off-screen player to reclaim its memory.
     private func evict(_ id: String) {
         guard let e = entries[id] else { return }
@@ -364,7 +458,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
-        for e in entries.values where e.hostedIn != nil && e.online {
+        for e in entries.values where e.hostedIn != nil && e.online && !shadowed.contains(e.id) {
             switch e.player.state {
             case .playing, .esAdded:
                 e.lastHealthyAt = now
@@ -384,6 +478,19 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             default:
                 break // opening / buffering / paused — leave it alone
             }
+        }
+
+        // Periodic maintenance: recreate one long-lived, healthy player per tick
+        // (staggered) so multi-day uptime doesn't accumulate libvlc drift/leaks.
+        if let old = entries.values.first(where: {
+            $0.hostedIn != nil && $0.online && !shadowed.contains($0.id)
+                && ($0.player.state == .playing || $0.player.state == .esAdded)
+                && now.timeIntervalSince($0.playerCreatedAt) > maxPlayerLifetime
+        }) {
+            appLog("Player[\(old.id)]: scheduled recreation after \(Int(now.timeIntervalSince(old.playerCreatedAt) / 3600))h uptime to free memory", .debug)
+            recreatePlayer(old)
+            resetHealth(old)
+            launch(old, stopFirst: false)
         }
 
         // Evict players that have been off-screen long enough, to free memory.
@@ -407,7 +514,16 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.reportedFailure = true
             onPersistentFailure?(e.id)
         }
-        launch(e, stopFirst: true)
+        // Every few failed attempts, recreate the player object outright — a
+        // fresh player often breaks an error loop that relaunching the same one
+        // cannot, and clears any accumulated libvlc state.
+        if e.recoveryAttempts >= 3, e.recoveryAttempts % 3 == 0 {
+            appLog("Player[\(e.id)]: recreating player object after \(e.recoveryAttempts) failed attempts", .warn)
+            recreatePlayer(e)
+            launch(e, stopFirst: false)
+        } else {
+            launch(e, stopFirst: true)
+        }
     }
 
     /// UniFi RTSPS (7441, TLS+SRTP) isn't reliably supported by libvlc, so on

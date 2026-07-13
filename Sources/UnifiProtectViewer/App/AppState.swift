@@ -43,6 +43,7 @@ final class AppState: ObservableObject {
     private var lastStatusFetch = Date.distantPast
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
+    private var lastMemWarning = Date.distantPast
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -57,6 +58,14 @@ final class AppState: ObservableObject {
         // the camera is actually offline (vs a transient stream problem).
         CameraPlayerManager.shared.onPersistentFailure = { [weak self] cameraID in
             self?.confirmCameraStatus(triggeredBy: cameraID)
+        }
+
+        // Log memory-pressure events with context (which view / how many tiles),
+        // so a low-RAM machine's near-jetsam moments are visible in the log.
+        CameraPlayerManager.shared.onMemoryPressure = { [weak self] critical in
+            guard let self = self else { return }
+            appLog("Memory pressure (\(critical ? "critical" : "warning")) while showing view \"\(self.currentView?.name ?? "-")\" with \(self.camerasForCurrentView().count) tiles",
+                   critical ? .error : .warn)
         }
 
         // Make any user-added custom streams available immediately (even before
@@ -97,6 +106,17 @@ final class AppState: ObservableObject {
         let summary = CameraPlayerManager.shared.playbackSummary()
         appLog(String(format: "Stats: cpu=%.0f%% (%d cores → %d%% max) mem=%.0fMB | %@",
                       cpu, cores, cores * 100, mem, summary))
+
+        // Early warning as memory climbs toward a level where macOS may kill the
+        // app (jetsam). Throttled so it doesn't spam the log.
+        let physicalMB = Double(ProcessInfo.processInfo.physicalMemory) / 1024.0 / 1024.0
+        let ratio = physicalMB > 0 ? mem / physicalMB : 0
+        if ratio >= 0.4, Date().timeIntervalSince(lastMemWarning) >= 60 {
+            lastMemWarning = Date()
+            appLog(String(format: "High memory: %.0fMB (%.0f%% of %.1fGB). Reduce load: set Grid quality = Low or use fewer tiles per view. Off-screen streams are freed automatically.",
+                          mem, ratio * 100, physicalMB / 1024.0),
+                   ratio >= 0.6 ? .error : .warn)
+        }
     }
 
     /// Timer tick; only actually hits the API when needed.

@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 struct SettingsView: View {
     var body: some View {
@@ -9,9 +10,72 @@ struct SettingsView: View {
                 .tabItem { Label("Streams", systemImage: "dot.radiowaves.left.and.right") }
             ControlSettingsTab()
                 .tabItem { Label("Stream Deck", systemImage: "rectangle.grid.3x2") }
+            ReliabilitySettingsTab()
+                .tabItem { Label("Reliability", systemImage: "cross.case") }
         }
         .padding(20)
         .frame(width: 520, height: 460)
+    }
+}
+
+// MARK: - Reliability (24/7 control-room hardening)
+
+private struct ReliabilitySettingsTab: View {
+    @State private var autoRestart = LaunchAgentInstaller.isInstalled
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle("Automatically restart if it crashes or is killed", isOn: Binding(
+                    get: { autoRestart },
+                    set: { setAutoRestart($0) }
+                ))
+            } header: {
+                Text("Auto-restart (recommended for 24/7 walls)")
+            } footer: {
+                Text("Installs a per-user macOS **LaunchAgent** that relaunches the app within seconds of any abnormal exit — a crash, a force-quit, or an out-of-memory (jetsam) kill — and starts it again at login. A normal **Quit** (⌘Q) is respected and will not relaunch.\n\nIf you move or rename the app after enabling this, toggle it off and on again so the restart points at the new location.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
+            Section {
+                Button("Reveal log file in Finder") { revealLog() }
+                LabeledContent("Log file", value: AppLog.shared.fileURL.path)
+                    .font(.caption)
+                    .textSelection(.enabled)
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("The app logs CPU, memory and per-stream state, and records macOS memory-pressure warnings and crashes. If it still dies, also check `~/Library/Logs/DiagnosticReports/` for a crash or JetsamEvent report.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .alert("Auto-restart", isPresented: Binding(
+            get: { errorMessage != nil },
+            set: { if !$0 { errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(errorMessage ?? "")
+        }
+    }
+
+    private func setAutoRestart(_ on: Bool) {
+        do {
+            if on { try LaunchAgentInstaller.install() }
+            else { try LaunchAgentInstaller.uninstall() }
+            autoRestart = LaunchAgentInstaller.isInstalled
+        } catch {
+            errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            autoRestart = LaunchAgentInstaller.isInstalled
+        }
+    }
+
+    private func revealLog() {
+        NSWorkspace.shared.activateFileViewerSelecting([AppLog.shared.fileURL])
     }
 }
 

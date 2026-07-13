@@ -103,6 +103,9 @@ that the Stream Deck plugin talks to. Configure it in **Settings → Stream Deck
 > **Distributing to other Macs?** See **[docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)**
 > for building a signed/notarized Release `.app`/`.dmg`.
 
+> **Running 24/7 on a wall?** See **[docs/RELIABILITY.md](docs/RELIABILITY.md)** for
+> auto‑restart, memory tuning on 8 GB machines, and where to find crash reports.
+
 See **[docs/STREAMDECK.md](docs/STREAMDECK.md)** for installing the plugin and the
 full HTTP/WebSocket API. In short:
 

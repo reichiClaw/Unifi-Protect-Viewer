@@ -29,6 +29,7 @@ struct FullscreenCameraView: View {
             // Non-hit-testable so taps fall through to the base layer above.
             if needsUpgrade, let highURL = highQualityURL {
                 UpgradeVideoLayer(streamKey: camera.id + "#fs",
+                                  shadowCameraID: camera.id,
                                   url: highURL,
                                   caching: appState.config.connection.streamCacheMs,
                                   online: camera.isOnline,
@@ -139,14 +140,18 @@ struct FullscreenCameraView: View {
 /// actually playing, then fades in on top of the instant (grid-quality) layer.
 private struct UpgradeVideoLayer: View {
     let streamKey: String
+    /// The grid-quality camera this HQ layer covers; its decode is suspended
+    /// while this layer is actually playing, to avoid decoding it twice.
+    let shadowCameraID: String
     let url: URL
     let caching: Int
     let online: Bool
     let hardwareDecoding: Bool
     @ObservedObject private var status: CameraPlaybackStatus
 
-    init(streamKey: String, url: URL, caching: Int, online: Bool, hardwareDecoding: Bool) {
+    init(streamKey: String, shadowCameraID: String, url: URL, caching: Int, online: Bool, hardwareDecoding: Bool) {
         self.streamKey = streamKey
+        self.shadowCameraID = shadowCameraID
         self.url = url
         self.caching = caching
         self.online = online
@@ -158,5 +163,14 @@ private struct UpgradeVideoLayer: View {
         CameraVideoView(cameraID: streamKey, url: url, caching: caching, online: online, hardwareDecoding: hardwareDecoding)
             .opacity(status.state == .playing ? 1 : 0)
             .animation(.easeIn(duration: 0.25), value: status.state)
+            // Suspend the grid-quality decoder only while this HQ layer is
+            // actually playing (and covering it); resume it otherwise so the
+            // user never sees a black frame if this layer drops.
+            .onChange(of: status.state) { newState in
+                CameraPlayerManager.shared.setShadowed(cameraID: shadowCameraID, newState == .playing)
+            }
+            .onDisappear {
+                CameraPlayerManager.shared.setShadowed(cameraID: shadowCameraID, false)
+            }
     }
 }

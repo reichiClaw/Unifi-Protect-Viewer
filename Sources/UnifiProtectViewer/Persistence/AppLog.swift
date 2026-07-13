@@ -44,6 +44,10 @@ final class AppLog: ObservableObject {
     private let queue = DispatchQueue(label: "com.unifiprotectviewer.applog")
     private let maxEntries = 5000
     private let formatter: DateFormatter
+    /// Rotate the on-disk log once it grows past this, so a multi-day 24/7
+    /// session stays readable and bounded (one backup is kept as `app.log.1`).
+    private let maxFileBytes = 5_000_000
+    private var writeCount = 0  // only touched on `queue`
 
     private init() {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -69,8 +73,9 @@ final class AppLog: ObservableObject {
     func log(_ message: String, level: Level = .info) {
         let entry = Entry(date: Date(), level: level, message: message)
         let line = entry.formatted(formatter) + "\n"
-        queue.async { [fileURL] in
+        queue.async { [weak self, fileURL] in
             AppLog.append(line, to: fileURL)
+            self?.rotateIfNeeded(fileURL)
         }
         DispatchQueue.main.async {
             self.entries.append(entry)
@@ -90,6 +95,21 @@ final class AppLog: ObservableObject {
     /// All in-memory entries joined into a single string (for copy/share).
     func exportText() -> String {
         entries.map { $0.formatted(formatter) }.joined(separator: "\n")
+    }
+
+    /// Rotate the log file mid-run when it exceeds `maxFileBytes`. Runs on
+    /// `queue`; the size is only checked every so often to avoid statting the
+    /// file on every write.
+    private func rotateIfNeeded(_ url: URL) {
+        writeCount += 1
+        guard writeCount % 200 == 0 else { return }
+        guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
+              size > maxFileBytes else { return }
+        let backup = url.deletingLastPathComponent().appendingPathComponent("app.log.1")
+        try? FileManager.default.removeItem(at: backup)
+        try? FileManager.default.moveItem(at: url, to: backup)
+        let marker = "===== log rotated \(formatter.string(from: Date())) (previous kept as app.log.1) =====\n"
+        AppLog.append(marker, to: url)
     }
 
     private static func append(_ string: String, to url: URL) {
