@@ -1,29 +1,45 @@
 {
 	"SDKVersion": 2,
+	"UUID": "com.unifiprotectviewer",
 	"Author": "UniFi Protect Viewer",
 	"Name": "UniFi Protect Viewer",
-	"Description": "Switch grid views and pop cameras fullscreen in the UniFi Protect Viewer macOS app.",
-	"Version": "1.0.0",
-	"URL": "https://github.com/your-org/Unifi-Protect-Viewer",
+	"Description": "Switch grid views, pop cameras fullscreen, and control PTZ in the UniFi Protect Viewer macOS app.",
+	"Version": "1.1.0.0",
+	"URL": "https://github.com/reichiClaw/Unifi-Protect-Viewer",
 	"Icon": "icons/plugin",
-	"Category": "UniFi Protect",
+	"Category": "UniFi Protect Viewer",
 	"CategoryIcon": "icons/category",
 	"CodePath": "plugin/index.html",
 	"PropertyInspectorPath": "pi/inspector.html",
 	"OS": [
-		{ "Platform": "mac", "MinimumVersion": "10.15" },
-		{ "Platform": "windows", "MinimumVersion": "10" }
+		{
+			"Platform": "mac",
+			"MinimumVersion": "10.15"
+		},
+		{
+			"Platform": "windows",
+			"MinimumVersion": "10"
+		}
 	],
-	"Software": { "MinimumVersion": "6.0" },
+	"Software": {
+		"MinimumVersion": "6.4"
+	},
 	"Actions": [
 		{
 			"UUID": "com.unifiprotectviewer.switchview",
 			"Name": "Switch View",
 			"Tooltip": "Switch the viewer to a specific grid view.",
 			"Icon": "icons/switchView",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
 			"States": [
-				{ "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" }
+				{
+					"Image": "icons/switchViewKey",
+					"TitleAlignment": "bottom",
+					"FontSize": 12
+				}
 			]
 		},
 		{
@@ -31,25 +47,48 @@
 			"Name": "Next View",
 			"Tooltip": "Switch to the next grid view.",
 			"Icon": "icons/nextView",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+			"States": [
+				{
+					"Image": "icons/nextViewKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.prevview",
 			"Name": "Previous View",
 			"Tooltip": "Switch to the previous grid view.",
 			"Icon": "icons/prevView",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+			"States": [
+				{
+					"Image": "icons/prevViewKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.fullscreen",
 			"Name": "Camera Fullscreen",
 			"Tooltip": "Show a specific camera fullscreen (toggles back to the grid).",
 			"Icon": "icons/fullscreen",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
 			"States": [
-				{ "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" }
+				{
+					"Image": "icons/fullscreenKey",
+					"TitleAlignment": "bottom",
+					"FontSize": 12
+				}
 			]
 		},
 		{
@@ -57,40 +96,82 @@
 			"Name": "Exit Fullscreen",
 			"Tooltip": "Return from fullscreen to the grid.",
 			"Icon": "icons/exitFullscreen",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+			"States": [
+				{
+					"Image": "icons/exitFullscreenKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.ptzpreset",
 			"Name": "PTZ: Go to Preset",
 			"Tooltip": "Move the fullscreen PTZ camera to a saved preset slot.",
 			"Icon": "icons/ptz",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" } ]
+			"States": [
+				{
+					"Image": "icons/ptzKey",
+					"TitleAlignment": "bottom",
+					"FontSize": 12
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.ptzhome",
 			"Name": "PTZ: Home",
 			"Tooltip": "Move the fullscreen PTZ camera to its home position.",
 			"Icon": "icons/ptzHome",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+			"States": [
+				{
+					"Image": "icons/ptzHomeKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.ptzpatrol",
 			"Name": "PTZ: Start Patrol",
 			"Tooltip": "Start a patrol (tour) on the fullscreen PTZ camera.",
 			"Icon": "icons/ptzPatrol",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom", "FontSize": "12" } ]
+			"States": [
+				{
+					"Image": "icons/ptzPatrolKey",
+					"TitleAlignment": "bottom",
+					"FontSize": 12
+				}
+			]
 		},
 		{
 			"UUID": "com.unifiprotectviewer.ptzstop",
 			"Name": "PTZ: Stop Patrol",
 			"Tooltip": "Stop the active patrol on the fullscreen PTZ camera.",
 			"Icon": "icons/ptzStop",
+			"Controllers": [
+				"Keypad"
+			],
 			"PropertyInspectorPath": "pi/inspector.html",
-			"States": [ { "Image": "icons/key", "TitleAlignment": "bottom" } ]
+			"States": [
+				{
+					"Image": "icons/ptzStopKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

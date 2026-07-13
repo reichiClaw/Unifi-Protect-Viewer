@@ -54,6 +54,15 @@ function baseURL(s) {
 	return `http://${s.host}:${s.port}`;
 }
 
+// fetch with a hard timeout so an unreachable app fails fast (button shows an
+// alert) instead of hanging on the OS-level connection timeout.
+function fetchWithTimeout(url, options, timeoutMs) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs || 4000);
+	const opts = Object.assign({}, options, { signal: controller.signal });
+	return fetch(url, opts).finally(() => clearTimeout(timer));
+}
+
 // ---------------------------------------------------------------------------
 // Stream Deck registration entry point.
 // ---------------------------------------------------------------------------
@@ -81,32 +90,38 @@ function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, in
 window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
 
 function handleSDMessage(msg) {
-	const { event, action, context, payload } = msg;
-	switch (event) {
-		case "willAppear":
-			buttons.set(context, { action, settings: defaults(payload.settings) });
-			ensureAppConnection(buttons.get(context).settings);
-			refreshButton(context);
-			break;
-		case "willDisappear":
-			buttons.delete(context);
-			break;
-		case "didReceiveSettings":
-			buttons.set(context, { action, settings: defaults(payload.settings) });
-			ensureAppConnection(buttons.get(context).settings);
-			refreshButton(context);
-			break;
-		case "keyDown":
-			onKeyDown(action, context, defaults(payload.settings));
-			break;
-		case "deviceDidConnect":
-			if (msg.device) devices.add(msg.device);
-			break;
-		case "deviceDidDisconnect":
-			if (msg.device) devices.delete(msg.device);
-			break;
-		default:
-			break;
+	try {
+		const { event, action, context, payload } = msg;
+		switch (event) {
+			case "willAppear":
+				buttons.set(context, { action, settings: defaults(payload && payload.settings) });
+				ensureAppConnection(buttons.get(context).settings);
+				refreshButton(context);
+				break;
+			case "willDisappear":
+				buttons.delete(context);
+				pruneConnections();
+				break;
+			case "didReceiveSettings":
+				buttons.set(context, { action, settings: defaults(payload && payload.settings) });
+				ensureAppConnection(buttons.get(context).settings);
+				pruneConnections();
+				refreshButton(context);
+				break;
+			case "keyDown":
+				onKeyDown(action, context, defaults(payload && payload.settings));
+				break;
+			case "deviceDidConnect":
+				if (msg.device) devices.add(msg.device);
+				break;
+			case "deviceDidDisconnect":
+				if (msg.device) devices.delete(msg.device);
+				break;
+			default:
+				break;
+		}
+	} catch (e) {
+		// Never let a malformed message take down the plugin runtime.
 	}
 }
 
@@ -115,6 +130,7 @@ function evaluateProfileSwitch(snapshot) {
 	const want = !!(snapshot && snapshot.fullscreenCameraPtz);
 	if (want === ptzProfileActive) return;
 	ptzProfileActive = want;
+	if (!devices.size) return; // nothing to switch
 	for (const device of devices) {
 		send({
 			event: "switchToProfile",
@@ -172,11 +188,11 @@ async function onKeyDown(action, context, s) {
 	if (s.token) body.token = s.token;
 
 	try {
-		const res = await fetch(baseURL(s) + path, {
+		const res = await fetchWithTimeout(baseURL(s) + path, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", "X-Auth-Token": s.token || "" },
 			body: JSON.stringify(body),
-		});
+		}, 4000);
 		const data = await res.json().catch(() => ({}));
 		if (res.ok && data.ok !== false) {
 			showOk(context);
@@ -214,14 +230,29 @@ function ensureAppConnection(s) {
 	conn.connect();
 }
 
+// Close and forget any app connection no longer referenced by a button, so we
+// don't keep a socket (and reconnect loop) alive for a host/port nobody uses.
+function pruneConnections() {
+	const inUse = new Set();
+	for (const [, info] of buttons) inUse.add(connKey(info.settings));
+	for (const [key, conn] of appConnections) {
+		if (!inUse.has(key)) {
+			conn.close();
+			appConnections.delete(key);
+		}
+	}
+}
+
 class AppConnection {
 	constructor(settings) {
 		this.settings = settings;
 		this.ws = null;
 		this.snapshot = null;
 		this.reconnectTimer = null;
+		this.closed = false;
 	}
 	connect() {
+		if (this.closed) return;
 		const url = `ws://${this.settings.host}:${this.settings.port}/ws`;
 		try {
 			this.ws = new WebSocket(url);
@@ -241,11 +272,19 @@ class AppConnection {
 		this.ws.onerror = () => { try { this.ws.close(); } catch (e) {} };
 	}
 	scheduleReconnect() {
-		if (this.reconnectTimer) return;
+		if (this.closed || this.reconnectTimer) return;
 		this.reconnectTimer = setTimeout(() => {
 			this.reconnectTimer = null;
 			this.connect();
 		}, 3000);
+	}
+	close() {
+		this.closed = true;
+		if (this.reconnectTimer) { clearTimeout(this.reconnectTimer); this.reconnectTimer = null; }
+		if (this.ws) {
+			try { this.ws.onclose = null; this.ws.close(); } catch (e) { /* ignore */ }
+			this.ws = null;
+		}
 	}
 }
 

@@ -23,17 +23,22 @@ const PTZ_SLOT_ACTIONS = new Set([
 
 function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, _inInfo, inActionInfo) {
 	uuid = inUUID;
-	const actionInfo = JSON.parse(inActionInfo);
-	actionType = actionInfo.action;
-	settings = (actionInfo.payload && actionInfo.payload.settings) || {};
+	try {
+		const actionInfo = JSON.parse(inActionInfo);
+		actionType = actionInfo.action;
+		settings = (actionInfo.payload && actionInfo.payload.settings) || {};
+	} catch (e) {
+		settings = {};
+	}
 
 	sd = new WebSocket(`ws://127.0.0.1:${inPort}`);
 	sd.onopen = () => {
-		sd.send(JSON.stringify({ event: inRegisterEvent, uuid: inUUID }));
+		sdSend({ event: inRegisterEvent, uuid: inUUID });
 		initUI();
 	};
 	sd.onmessage = (evt) => {
-		const msg = JSON.parse(evt.data);
+		let msg;
+		try { msg = JSON.parse(evt.data); } catch (e) { return; }
 		if (msg.event === "didReceiveSettings") {
 			settings = (msg.payload && msg.payload.settings) || {};
 			fillUI();
@@ -43,6 +48,17 @@ function connectElgatoStreamDeckSocket(inPort, inUUID, inRegisterEvent, _inInfo,
 window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
 
 function el(id) { return document.getElementById(id); }
+
+function sdSend(obj) {
+	if (sd && sd.readyState === 1) sd.send(JSON.stringify(obj));
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs || 4000);
+	const opts = Object.assign({}, options || {}, { signal: controller.signal });
+	return fetch(url, opts).finally(() => clearTimeout(timer));
+}
 
 function initUI() {
 	// Show only the relevant action-specific group.
@@ -141,7 +157,7 @@ function persist() {
 		cameraName: el("cameraName").value,
 		slot: el("slot").value,
 	};
-	sd.send(JSON.stringify({ event: "setSettings", context: uuid, payload: settings }));
+	sdSend({ event: "setSettings", context: uuid, payload: settings });
 }
 
 async function loadState() {
@@ -150,9 +166,9 @@ async function loadState() {
 	const token = el("token").value || "";
 	setStatus("Loading…");
 	try {
-		const res = await fetch(`http://${host}:${port}/api/state`, {
+		const res = await fetchWithTimeout(`http://${host}:${port}/api/state`, {
 			headers: { "X-Auth-Token": token },
-		});
+		}, 4000);
 		const data = await res.json();
 		const snap = data.snapshot || data;
 		populateViews(snap.views || []);
