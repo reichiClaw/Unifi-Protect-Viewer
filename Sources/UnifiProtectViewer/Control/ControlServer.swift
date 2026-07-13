@@ -27,6 +27,9 @@ final class ControlServer {
 
     private let socketsLock = NSLock()
     private var sockets: [WebSocketSession] = []
+    /// Snapshot writes happen here, never on the main thread — a slow or
+    /// half-dead Stream Deck client must not be able to block the UI.
+    private let broadcastQueue = DispatchQueue(label: "com.unifiprotectviewer.control.broadcast")
 
     init(handler: ControlServerHandler) {
         self.handler = handler
@@ -62,14 +65,22 @@ final class ControlServer {
     }
 
     /// Push the latest snapshot to all connected WebSocket clients.
+    ///
+    /// Often called from the main thread (via `AppState.broadcastSnapshot`), so
+    /// the actual socket writes are dispatched to a background queue: a slow or
+    /// stuck client can otherwise block the writer, and blocking the main thread
+    /// would beachball the whole UI.
     func broadcast(snapshot: ControlSnapshot) {
         guard isRunning else { return }
         guard let text = encodeToString(snapshot) else { return }
         socketsLock.lock()
         let current = sockets
         socketsLock.unlock()
-        for socket in current {
-            socket.writeText(text)
+        guard !current.isEmpty else { return }
+        broadcastQueue.async {
+            for socket in current {
+                socket.writeText(text)
+            }
         }
     }
 
