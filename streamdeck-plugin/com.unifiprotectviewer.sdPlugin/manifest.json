@@ -172,6 +172,102 @@
 					"TitleAlignment": "bottom"
 				}
 			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzup",
+			"Name": "PTZ: Tilt Up",
+			"Tooltip": "Hold to tilt the fullscreen PTZ camera up; release to stop.",
+			"Icon": "icons/ptzUp",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzUpKey",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzdown",
+			"Name": "PTZ: Tilt Down",
+			"Tooltip": "Hold to tilt the fullscreen PTZ camera down; release to stop.",
+			"Icon": "icons/ptzDown",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzDownKey",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzleft",
+			"Name": "PTZ: Pan Left",
+			"Tooltip": "Hold to pan the fullscreen PTZ camera left; release to stop.",
+			"Icon": "icons/ptzLeft",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzLeftKey",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzright",
+			"Name": "PTZ: Pan Right",
+			"Tooltip": "Hold to pan the fullscreen PTZ camera right; release to stop.",
+			"Icon": "icons/ptzRight",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzRightKey",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzzoomin",
+			"Name": "PTZ: Zoom In",
+			"Tooltip": "Hold to zoom the fullscreen PTZ camera in; release to stop.",
+			"Icon": "icons/ptzZoomIn",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzZoomInKey",
+					"TitleAlignment": "bottom"
+				}
+			]
+		},
+		{
+			"UUID": "com.unifiprotectviewer.ptzzoomout",
+			"Name": "PTZ: Zoom Out",
+			"Tooltip": "Hold to zoom the fullscreen PTZ camera out; release to stop.",
+			"Icon": "icons/ptzZoomOut",
+			"Controllers": [
+				"Keypad"
+			],
+			"PropertyInspectorPath": "pi/inspector.html",
+			"States": [
+				{
+					"Image": "icons/ptzZoomOutKey",
+					"TitleAlignment": "bottom"
+				}
+			]
 		}
 	]
 }

@@ -127,6 +127,31 @@ def g_stop(d, x, y, w, color, thick):
                         radius=w * 0.12, fill=color)
 
 
+def g_chevron_v(d, x, y, w, color, thick, up=True):
+    h = w
+    if up:
+        pts = [(x + w * 0.12, y + h * 0.68), (x + w * 0.5, y + h * 0.28), (x + w * 0.88, y + h * 0.68)]
+    else:
+        pts = [(x + w * 0.12, y + h * 0.32), (x + w * 0.5, y + h * 0.72), (x + w * 0.88, y + h * 0.32)]
+    d.line(pts, fill=color, width=thick, joint="curve")
+
+
+def g_magnifier(d, x, y, w, color, thick, plus=True):
+    r0 = w * 0.1
+    r1 = w * 0.55
+    d.ellipse([x + r0, y + r0, x + r1, y + r1], outline=color, width=thick)
+    # handle
+    cx = x + (r0 + r1) / 2
+    d.line([(x + r1 * 0.92, y + r1 * 0.92), (x + w * 0.9, y + w * 0.9)], fill=color, width=thick + 1)
+    # +/- inside the lens
+    lx = x + (r0 + r1) / 2
+    ly = y + (r0 + r1) / 2
+    s = w * 0.13
+    d.line([(lx - s, ly), (lx + s, ly)], fill=color, width=thick)
+    if plus:
+        d.line([(lx, ly - s), (lx, ly + s)], fill=color, width=thick)
+
+
 GLYPHS = {
     "switchView": (g_grid, ACCENT, "VIEW"),
     "nextView": (lambda d, x, y, w, c, t: g_chevron(d, x, y, w, c, t, right=True), ACCENT, "NEXT"),
@@ -137,6 +162,12 @@ GLYPHS = {
     "ptzHome": (g_house, PTZ_ACCENT, "HOME"),
     "ptzPatrol": (g_loop, PTZ_ACCENT, "TOUR"),
     "ptzStop": (g_stop, PTZ_ACCENT, "STOP"),
+    "ptzUp": (lambda d, x, y, w, c, t: g_chevron_v(d, x, y, w, c, t, up=True), PTZ_ACCENT, "UP"),
+    "ptzDown": (lambda d, x, y, w, c, t: g_chevron_v(d, x, y, w, c, t, up=False), PTZ_ACCENT, "DOWN"),
+    "ptzLeft": (lambda d, x, y, w, c, t: g_chevron(d, x, y, w, c, t, right=False), PTZ_ACCENT, "LEFT"),
+    "ptzRight": (lambda d, x, y, w, c, t: g_chevron(d, x, y, w, c, t, right=True), PTZ_ACCENT, "RIGHT"),
+    "ptzZoomIn": (lambda d, x, y, w, c, t: g_magnifier(d, x, y, w, c, t, plus=True), PTZ_ACCENT, "IN"),
+    "ptzZoomOut": (lambda d, x, y, w, c, t: g_magnifier(d, x, y, w, c, t, plus=False), PTZ_ACCENT, "OUT"),
 }
 
 

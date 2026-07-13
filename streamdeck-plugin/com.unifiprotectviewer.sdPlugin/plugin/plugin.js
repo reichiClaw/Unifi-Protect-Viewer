@@ -35,6 +35,23 @@ const ACTIONS = {
 	PTZ_HOME: "com.unifiprotectviewer.ptzhome",
 	PTZ_PATROL: "com.unifiprotectviewer.ptzpatrol",
 	PTZ_STOP: "com.unifiprotectviewer.ptzstop",
+	MOVE_UP: "com.unifiprotectviewer.ptzup",
+	MOVE_DOWN: "com.unifiprotectviewer.ptzdown",
+	MOVE_LEFT: "com.unifiprotectviewer.ptzleft",
+	MOVE_RIGHT: "com.unifiprotectviewer.ptzright",
+	ZOOM_IN: "com.unifiprotectviewer.ptzzoomin",
+	ZOOM_OUT: "com.unifiprotectviewer.ptzzoomout",
+};
+
+// Hold-to-move actions: press moves in the given direction, release stops.
+// dx = pan (+right/-left), dy = tilt (+up/-down), dz = zoom (+out/-in).
+const MOVE_DIRS = {
+	[ACTIONS.MOVE_UP]: { dx: 0, dy: 1, dz: 0 },
+	[ACTIONS.MOVE_DOWN]: { dx: 0, dy: -1, dz: 0 },
+	[ACTIONS.MOVE_LEFT]: { dx: -1, dy: 0, dz: 0 },
+	[ACTIONS.MOVE_RIGHT]: { dx: 1, dy: 0, dz: 0 },
+	[ACTIONS.ZOOM_IN]: { dx: 0, dy: 0, dz: -1 },
+	[ACTIONS.ZOOM_OUT]: { dx: 0, dy: 0, dz: 1 },
 };
 
 function defaults(settings) {
@@ -111,6 +128,9 @@ function handleSDMessage(msg) {
 			case "keyDown":
 				onKeyDown(action, context, defaults(payload && payload.settings));
 				break;
+			case "keyUp":
+				onKeyUp(action, context, defaults(payload && payload.settings));
+				break;
 			case "deviceDidConnect":
 				if (msg.device) devices.add(msg.device);
 				break;
@@ -146,6 +166,12 @@ function evaluateProfileSwitch(snapshot) {
 // Button presses -> app control server.
 // ---------------------------------------------------------------------------
 async function onKeyDown(action, context, s) {
+	// Hold-to-move actions: start moving in the given direction on press.
+	if (MOVE_DIRS[action]) {
+		const d = MOVE_DIRS[action];
+		await postMove(context, s, { dx: d.dx, dy: d.dy, dz: d.dz });
+		return;
+	}
 	let path = null;
 	let body = {};
 	switch (action) {
@@ -200,6 +226,29 @@ async function onKeyDown(action, context, s) {
 		} else {
 			showAlert(context);
 		}
+	} catch (e) {
+		showAlert(context);
+	}
+}
+
+// Stop continuous movement when a hold-to-move key is released.
+async function onKeyUp(action, context, s) {
+	if (MOVE_DIRS[action]) {
+		await postMove(context, s, { dx: 0, dy: 0, dz: 0 });
+	}
+}
+
+// Send a continuous-move command (dx/dy/dz; all zero = stop) to the app.
+async function postMove(context, s, body) {
+	if (s.token) body.token = s.token;
+	try {
+		const res = await fetchWithTimeout(baseURL(s) + "/api/ptz-move", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "X-Auth-Token": s.token || "" },
+			body: JSON.stringify(body),
+		}, 4000);
+		const data = await res.json().catch(() => ({}));
+		if (!res.ok || data.ok === false) showAlert(context);
 	} catch (e) {
 		showAlert(context);
 	}
