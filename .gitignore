@@ -12,8 +12,5 @@ build/
 .build/
 Package.resolved
 
-# Stream Deck generated icons (regenerate with generate-placeholder-icons.sh)
-streamdeck-plugin/com.unifiprotectviewer.sdPlugin/icons/*.png
-
 # Misc
 *.log
