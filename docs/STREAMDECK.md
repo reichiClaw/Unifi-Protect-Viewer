@@ -70,11 +70,22 @@ Button titles automatically update to show the active view / fullscreen camera.
 
 ## PTZ control
 
+### Easiest: on-screen controls (no Stream Deck needed)
+
+When you open a **PTZ camera** fullscreen in the app, a control bar appears at
+the bottom with **Home**, numbered **preset** buttons, and **patrol start/stop**
+— just click them. The number of preset buttons is configurable in
+**Settings → Connection → Behavior → “On-screen PTZ preset buttons.”** Preset
+buttons are labelled `1…N` and map to the camera's zero-based preset slots
+(button *n* → slot *n-1*).
+
+### Stream Deck PTZ actions
+
 The PTZ actions always target **whichever PTZ camera is currently shown
 fullscreen** in the app — so a single set of PTZ buttons works for every PTZ
 camera. Each PTZ action just needs the **Host/Port/Token**; *Preset* and
-*Patrol* also take a **slot** number (0+ = saved presets/patrols; the *Home*
-action uses the home position).
+*Patrol* also take a **slot** number (0 = the first saved preset/patrol; the
+*Home* action uses the home position).
 
 ### Auto-switch to a PTZ page when a PTZ camera is fullscreen
 

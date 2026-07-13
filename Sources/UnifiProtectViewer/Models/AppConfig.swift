@@ -133,6 +133,8 @@ struct AppConfiguration: Codable {
     var control: ControlServerSettings = ControlServerSettings()
     /// Clicking the fullscreen single-camera view returns to the grid.
     var tapFullscreenToExit: Bool = true
+    /// Number of on-screen PTZ preset buttons shown for a fullscreen PTZ camera.
+    var ptzPresetCount: Int = 4
     /// User-added non-UniFi streams.
     var manualCameras: [ManualCamera] = []
 
@@ -145,6 +147,7 @@ struct AppConfiguration: Codable {
         views = try c.decodeIfPresent([CameraGridConfig].self, forKey: .views) ?? []
         control = try c.decodeIfPresent(ControlServerSettings.self, forKey: .control) ?? ControlServerSettings()
         tapFullscreenToExit = try c.decodeIfPresent(Bool.self, forKey: .tapFullscreenToExit) ?? true
+        ptzPresetCount = try c.decodeIfPresent(Int.self, forKey: .ptzPresetCount) ?? 4
         manualCameras = try c.decodeIfPresent([ManualCamera].self, forKey: .manualCameras) ?? []
     }
 }

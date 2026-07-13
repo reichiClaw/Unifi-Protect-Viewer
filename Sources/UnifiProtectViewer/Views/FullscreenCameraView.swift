@@ -42,6 +42,15 @@ struct FullscreenCameraView: View {
                 controlBar
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+
+            // On-screen PTZ controls for PTZ cameras — no Stream Deck required.
+            if camera.isPTZ && showControls {
+                VStack {
+                    Spacer()
+                    ptzPanel
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
         }
         .background(Color.black)
         .onHover { hovering in
@@ -133,6 +142,55 @@ struct FullscreenCameraView: View {
         guard let idx = cams.firstIndex(where: { $0.id == camera.id }), !cams.isEmpty else { return }
         let next = (idx + delta + cams.count) % cams.count
         appState.showFullscreen(cameraID: cams[next].id)
+    }
+
+    // MARK: PTZ controls
+
+    /// Floating control bar for a PTZ camera: home, saved presets, and patrol.
+    /// Preset buttons are labelled 1…N but map to zero-based slots (button *n*
+    /// = slot *n-1*), matching the camera's saved preset positions.
+    private var ptzPanel: some View {
+        HStack(spacing: 10) {
+            ptzButton(system: "house.fill", help: "Home position") {
+                sendPTZ(action: "home", slot: 0)
+            }
+
+            if appState.config.ptzPresetCount > 0 {
+                Divider().frame(height: 22)
+                ForEach(1...appState.config.ptzPresetCount, id: \.self) { n in
+                    Button("\(n)") { sendPTZ(action: "goto", slot: n - 1) }
+                        .buttonStyle(.bordered)
+                        .frame(minWidth: 30)
+                        .help("Go to preset \(n)")
+                }
+            }
+
+            Divider().frame(height: 22)
+            ptzButton(system: "play.fill", help: "Start patrol") {
+                sendPTZ(action: "patrol-start", slot: 0)
+            }
+            ptzButton(system: "stop.fill", help: "Stop patrol") {
+                sendPTZ(action: "patrol-stop", slot: 0)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .padding(.bottom, 16)
+    }
+
+    private func ptzButton(system: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system)
+                .frame(width: 22, height: 20)
+        }
+        .buttonStyle(.bordered)
+        .help(help)
+    }
+
+    private func sendPTZ(action: String, slot: Int) {
+        _ = appState.controlPTZ(cameraID: camera.id, index: nil, name: nil, action: action, slot: slot)
     }
 }
 

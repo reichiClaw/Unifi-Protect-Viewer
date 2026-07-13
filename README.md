@@ -10,7 +10,8 @@ to switch between views and pop individual cameras fullscreen.
 - 🧩 Multiple **configurable, named grid views** (pick cameras, ordering, layout, quality)
 - ➕ **Custom streams** — add any RTSP/HTTP/HLS source (non‑UniFi cameras) alongside your Protect cameras
 - 🖥️ Click any tile to go **fullscreen**; step through cameras with the keyboard
-- 🎛️ **Stream Deck plugin** to switch views, pop a camera fullscreen, and step views
+- 🕹️ **PTZ cameras** get on-screen controls (home, presets, patrol) in fullscreen — no Stream Deck required
+- 🎛️ **Stream Deck plugin** to switch views, pop a camera fullscreen, control PTZ, and step views
 - 🔐 Password stored in the macOS **Keychain**; talks only to your local controller
 
 > This project is not affiliated with or endorsed by Ubiquiti. It uses the

@@ -258,6 +258,12 @@ private struct ConnectionSettingsTab: View {
                     get: { appState.config.tapFullscreenToExit },
                     set: { appState.config.tapFullscreenToExit = $0; appState.saveConfig() }
                 ))
+                Stepper(value: Binding(
+                    get: { appState.config.ptzPresetCount },
+                    set: { appState.config.ptzPresetCount = max(0, min(12, $0)); appState.saveConfig() }
+                ), in: 0...12) {
+                    Text("On-screen PTZ preset buttons: \(appState.config.ptzPresetCount)")
+                }
             }
 
             Section {
