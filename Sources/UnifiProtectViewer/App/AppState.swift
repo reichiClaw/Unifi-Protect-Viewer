@@ -59,6 +59,14 @@ final class AppState: ObservableObject {
             self?.confirmCameraStatus(triggeredBy: cameraID)
         }
 
+        // Log memory-pressure events with context (which view / how many tiles),
+        // so a low-RAM machine's near-jetsam moments are visible in the log.
+        CameraPlayerManager.shared.onMemoryPressure = { [weak self] critical in
+            guard let self = self else { return }
+            appLog("Memory pressure (\(critical ? "critical" : "warning")) while showing view \"\(self.currentView?.name ?? "-")\" with \(self.camerasForCurrentView().count) tiles",
+                   critical ? .error : .warn)
+        }
+
         // Make any user-added custom streams available immediately (even before
         // / without connecting to a UniFi controller).
         if !config.manualCameras.isEmpty {

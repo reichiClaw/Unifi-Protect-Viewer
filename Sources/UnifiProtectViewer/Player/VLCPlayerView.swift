@@ -137,6 +137,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Held strongly here (the singleton lives for the app's lifetime).
     private let vlcLogger = VLCDecodeLogger()
     private var vlcLoggerInstalled = false
+    /// Watches system memory pressure so we can shed off-screen decoders before
+    /// macOS resorts to killing us (jetsam) — the biggest crash risk on 8 GB.
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+    /// Called (main thread) on a memory-pressure warning/critical event so the
+    /// app can log it / react. `true` = critical.
+    var onMemoryPressure: ((Bool) -> Void)?
 
     override init() {
         super.init()
@@ -145,6 +151,32 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
         RunLoop.main.add(timer, forMode: .common)
         watchdog = timer
+        installMemoryPressureMonitor()
+    }
+
+    // MARK: Memory pressure
+
+    private func installMemoryPressureMonitor() {
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        source.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let critical = source.data.contains(.critical)
+            self.handleMemoryPressure(critical: critical)
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
+
+    /// Free every off-screen player immediately (don't wait for the idle timer),
+    /// so the OS reclaims that RAM instead of killing the process.
+    private func handleMemoryPressure(critical: Bool) {
+        let offscreen = entries.values.filter { $0.hostedIn == nil }.map { $0.id }
+        for id in offscreen { evict(id) }
+        let mem = SystemStats.memoryFootprintMB()
+        appLog(String(format: "Memory pressure %@ — evicted %d off-screen stream(s) to free RAM (footprint %.0fMB)",
+                      critical ? "CRITICAL" : "warning", offscreen.count, mem),
+               critical ? .error : .warn)
+        onMemoryPressure?(critical)
     }
 
     // MARK: Public API (main thread)
