@@ -98,6 +98,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var hardwareDecoding = true
         // Watchdog bookkeeping.
         var startedAt = Date()
+        /// When the current `VLCMediaPlayer` object was created — used to
+        /// periodically recreate it and shed slow libvlc leaks/drift.
+        var playerCreatedAt = Date()
         var lastHealthyAt = Date.distantPast
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
@@ -137,6 +140,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Fully release (deallocate) a player that has been off-screen this long,
     /// to free its decoder/network buffers — important on low-RAM machines.
     private let evictionSeconds: TimeInterval = 60
+    /// Recreate a continuously-running player object after this long, to shed
+    /// slow memory drift/leaks inside libvlc over multi-day (24/7) uptime.
+    private let maxPlayerLifetime: TimeInterval = 4 * 3600
     /// Captures libvlc's log so we can report the actual decoder per stream.
     /// Held strongly here (the singleton lives for the app's lifetime).
     private let vlcLogger = VLCDecodeLogger()
@@ -410,6 +416,25 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
     }
 
+    /// Replace an entry's `VLCMediaPlayer` with a fresh object, reusing the same
+    /// video surface. Clears libvlc-internal state/leaks that `stop()` +
+    /// `media = nil` don't — used both for periodic maintenance and to break an
+    /// error loop that restarting the same player can't. Caller then `launch`es.
+    private func recreatePlayer(_ e: Entry) {
+        let old = e.player
+        old.delegate = nil
+        old.drawable = nil
+        let fresh = VLCMediaPlayer()
+        fresh.drawable = e.surface
+        fresh.delegate = self
+        e.player = fresh
+        e.playerCreatedAt = Date()
+        e.controlQueue.async {
+            old.stop()
+            old.media = nil
+        }
+    }
+
     /// Fully release an off-screen player to reclaim its memory.
     private func evict(_ id: String) {
         guard let e = entries[id] else { return }
@@ -455,6 +480,19 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             }
         }
 
+        // Periodic maintenance: recreate one long-lived, healthy player per tick
+        // (staggered) so multi-day uptime doesn't accumulate libvlc drift/leaks.
+        if let old = entries.values.first(where: {
+            $0.hostedIn != nil && $0.online && !shadowed.contains($0.id)
+                && ($0.player.state == .playing || $0.player.state == .esAdded)
+                && now.timeIntervalSince($0.playerCreatedAt) > maxPlayerLifetime
+        }) {
+            appLog("Player[\(old.id)]: scheduled recreation after \(Int(now.timeIntervalSince(old.playerCreatedAt) / 3600))h uptime to free memory", .debug)
+            recreatePlayer(old)
+            resetHealth(old)
+            launch(old, stopFirst: false)
+        }
+
         // Evict players that have been off-screen long enough, to free memory.
         let stale = entries.values.filter { $0.hostedIn == nil }
             .filter { ($0.idleSince.map { now.timeIntervalSince($0) > evictionSeconds }) ?? false }
@@ -476,7 +514,16 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.reportedFailure = true
             onPersistentFailure?(e.id)
         }
-        launch(e, stopFirst: true)
+        // Every few failed attempts, recreate the player object outright — a
+        // fresh player often breaks an error loop that relaunching the same one
+        // cannot, and clears any accumulated libvlc state.
+        if e.recoveryAttempts >= 3, e.recoveryAttempts % 3 == 0 {
+            appLog("Player[\(e.id)]: recreating player object after \(e.recoveryAttempts) failed attempts", .warn)
+            recreatePlayer(e)
+            launch(e, stopFirst: false)
+        } else {
+            launch(e, stopFirst: true)
+        }
     }
 
     /// UniFi RTSPS (7441, TLS+SRTP) isn't reliably supported by libvlc, so on
