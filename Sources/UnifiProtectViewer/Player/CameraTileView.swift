@@ -62,10 +62,22 @@ struct CameraTileView: View {
         isFullscreen ? appState.fullscreenQuality : appState.gridQuality(for: view)
     }
 
+    /// The status dot reflects the live stream state (primary signal), not just
+    /// the controller's flag: green = receiving video, orange = reconnecting,
+    /// red = offline, grey = connecting.
+    private var statusColor: Color {
+        switch status.state {
+        case .playing: return .green
+        case .offline: return .red
+        case .error: return .orange
+        case .buffering, .idle: return .gray
+        }
+    }
+
     private var nameBar: some View {
         HStack(spacing: 6) {
             Circle()
-                .fill(camera.isOnline ? Color.green : Color.red)
+                .fill(statusColor)
                 .frame(width: 8, height: 8)
             Text(camera.displayName)
                 .font(.caption)
@@ -92,9 +104,11 @@ struct CameraTileView: View {
                 .tint(.white)
         case .error:
             VStack(spacing: 6) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .foregroundColor(.yellow)
-                Text("Stream error — retrying…")
+                ProgressView()
+                    .controlSize(.small)
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+                Text("Reconnecting…")
                     .font(.caption2)
                     .foregroundColor(.white.opacity(0.8))
             }

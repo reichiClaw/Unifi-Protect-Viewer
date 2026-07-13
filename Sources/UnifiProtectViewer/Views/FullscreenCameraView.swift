@@ -5,7 +5,13 @@ import SwiftUI
 struct FullscreenCameraView: View {
     let camera: ProtectCamera
     @EnvironmentObject private var appState: AppState
+    @ObservedObject private var status: CameraPlaybackStatus
     @State private var showControls = true
+
+    init(camera: ProtectCamera) {
+        self.camera = camera
+        _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
+    }
 
     var body: some View {
         ZStack(alignment: .top) {
@@ -42,6 +48,24 @@ struct FullscreenCameraView: View {
         .onAppear { showControls = true }
         // Esc returns to the grid.
         .onExitCommand { appState.exitFullscreen() }
+    }
+
+    private var statusColor: Color {
+        switch status.state {
+        case .playing: return .green
+        case .offline: return .red
+        case .error: return .orange
+        case .buffering, .idle: return .gray
+        }
+    }
+
+    private var statusText: String {
+        switch status.state {
+        case .playing: return "Live"
+        case .offline: return "Offline"
+        case .error: return "Reconnecting…"
+        case .buffering, .idle: return "Connecting…"
+        }
     }
 
     private var gridURL: URL? {
@@ -88,9 +112,9 @@ struct FullscreenCameraView: View {
 
             HStack(spacing: 6) {
                 Circle()
-                    .fill(camera.isOnline ? Color.green : Color.red)
+                    .fill(statusColor)
                     .frame(width: 8, height: 8)
-                Text(camera.isOnline ? "Live" : "Offline")
+                Text(statusText)
                     .font(.caption)
                     .foregroundColor(.white.opacity(0.8))
             }

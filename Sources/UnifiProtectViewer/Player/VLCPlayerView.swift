@@ -46,6 +46,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
         var announcedPlaying = false
+        /// Whether we've already asked the app to confirm this failure episode.
+        var reportedFailure = false
         /// When the player was stopped while off-screen (for memory eviction).
         var idleSince: Date?
         init(id: String) {
@@ -55,6 +57,10 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private var entries: [String: Entry] = [:]
+    /// Called (on the main thread) when a hosted, online camera's stream has
+    /// been failing to play for a while — so the app can check the controller
+    /// to distinguish "camera offline" from a transient stream problem.
+    var onPersistentFailure: ((String) -> Void)?
     /// Keep a stopped stream warm this long after it leaves the screen so quick
     /// back-and-forth resumes instantly.
     private let graceSeconds: TimeInterval = 10
@@ -187,6 +193,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.startedAt = now
         e.recoveryAttempts = 0
         e.nextRecoveryAllowedAt = now
+        e.reportedFailure = false
     }
 
     private func makeMedia(url: URL, caching: Int) -> VLCMedia {
@@ -307,6 +314,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         let backoff = min(15.0 * Double(e.recoveryAttempts), 300.0)
         e.nextRecoveryAllowedAt = now.addingTimeInterval(backoff)
         appLog("Player[\(e.id)]: recovering (attempt \(e.recoveryAttempts), next try in \(Int(backoff))s)", .warn)
+        // After a couple of failed attempts, ask the app to confirm whether the
+        // camera is actually offline (vs a transient stream problem).
+        if e.recoveryAttempts >= 2, !e.reportedFailure {
+            e.reportedFailure = true
+            onPersistentFailure?(e.id)
+        }
         launch(e, stopFirst: true)
     }
 
@@ -351,6 +364,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.recoveryAttempts = 0
             e.nextRecoveryAllowedAt = Date()
             e.lastHealthyAt = Date()
+            e.reportedFailure = false
             if !e.announcedPlaying {
                 e.announcedPlaying = true
                 appLog("Player[\(e.id)]: PLAYING", .debug)

@@ -36,6 +36,13 @@ final class AppState: ObservableObject {
     private var protectCameras: [ProtectCamera] = []
     private var statusPollTimer: Timer?
     private var statsTimer: Timer?
+    // Adaptive status polling.
+    private let pollTickSeconds: TimeInterval = 15
+    private let slowPollSeconds: TimeInterval = 150
+    private let onDemandThrottleSeconds: TimeInterval = 10
+    private var lastStatusFetch = Date.distantPast
+    private var lastOnDemandCheck = Date.distantPast
+    private var isFetchingStatus = false
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -45,6 +52,12 @@ final class AppState: ObservableObject {
         }
         self.selectedViewID = config.views.first?.id
         startControlServerIfNeeded()
+
+        // When a stream keeps failing, confirm against the controller whether
+        // the camera is actually offline (vs a transient stream problem).
+        CameraPlayerManager.shared.onPersistentFailure = { [weak self] cameraID in
+            self?.confirmCameraStatus(triggeredBy: cameraID)
+        }
 
         // Make any user-added custom streams available immediately (even before
         // / without connecting to a UniFi controller).
@@ -59,9 +72,10 @@ final class AppState: ObservableObject {
             connect()
         }
 
-        // Poll camera connection status so offline cameras stop retrying and
-        // reconnected cameras resume automatically.
-        let timer = Timer(timeInterval: 20, repeats: true) { [weak self] _ in
+        // Adaptive status poll: frequent while any camera is offline (to catch
+        // it coming back), infrequent otherwise. Live health is driven by the
+        // stream itself; this poll is for offline confirmation/recovery.
+        let timer = Timer(timeInterval: pollTickSeconds, repeats: true) { [weak self] _ in
             self?.pollCameraStatus()
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -85,16 +99,44 @@ final class AppState: ObservableObject {
                       cpu, cores, cores * 100, mem, summary))
     }
 
+    /// Timer tick; only actually hits the API when needed.
     private func pollCameraStatus() {
         guard connectionState == .connected else { return }
+        let anyOffline = camerasByID.values.contains { $0.directURL == nil && !$0.isOnline }
+        let slowDue = Date().timeIntervalSince(lastStatusFetch) >= slowPollSeconds
+        // Poll often while something is offline (to catch recovery), otherwise
+        // just an occasional safety refresh.
+        guard anyOffline || slowDue else { return }
+        fetchCameraStatus()
+    }
+
+    /// On-demand check triggered by a persistently failing stream, throttled so
+    /// several failing cameras don't cause a burst of API calls.
+    private func confirmCameraStatus(triggeredBy cameraID: String) {
+        guard connectionState == .connected else { return }
+        guard Date().timeIntervalSince(lastOnDemandCheck) >= onDemandThrottleSeconds else { return }
+        lastOnDemandCheck = Date()
+        appLog("Stream for \"\(camerasByID[cameraID]?.displayName ?? cameraID)\" keeps failing — checking controller for offline status…", .debug)
+        fetchCameraStatus()
+    }
+
+    private func fetchCameraStatus() {
+        guard !isFetchingStatus else { return }
+        isFetchingStatus = true
+        lastStatusFetch = Date()
         Task {
             do {
                 let fetched = try await apiClient.fetchCameras()
-                guard !fetched.isEmpty else { return }
-                await MainActor.run { self.refreshCameraStatus(fetched) }
+                await MainActor.run {
+                    self.isFetchingStatus = false
+                    if !fetched.isEmpty { self.refreshCameraStatus(fetched) }
+                }
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                appLog("Camera status poll failed: \(message)", .warn)
+                await MainActor.run {
+                    self.isFetchingStatus = false
+                    appLog("Camera status poll failed: \(message)", .warn)
+                }
             }
         }
     }
