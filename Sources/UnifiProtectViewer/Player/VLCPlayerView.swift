@@ -113,6 +113,10 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private var entries: [String: Entry] = [:]
+    /// Camera IDs whose (grid-quality) decode is temporarily suppressed because
+    /// a higher-quality fullscreen twin is covering them — avoids decoding the
+    /// same camera twice while fullscreen (a real memory spike on low-RAM Macs).
+    private var shadowed: Set<String> = []
     /// Called (on the main thread) when a hosted, online camera's stream has
     /// been failing to play for a while — so the app can check the controller
     /// to distinguish "camera offline" from a transient stream problem.
@@ -216,6 +220,15 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         let cameBackOnline = !e.online
         e.online = true
 
+        // Suppressed while a fullscreen high-quality twin covers this camera:
+        // keep the surface parented but don't run the grid-quality decoder.
+        // (Idempotent so SwiftUI re-renders can't accidentally restart it.)
+        if shadowed.contains(id) {
+            e.requestedURL = url
+            e.activeURL = url
+            return
+        }
+
         if e.requestedURL != url || cameBackOnline {
             e.requestedURL = url
             e.activeURL = url
@@ -250,6 +263,30 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         for (_, e) in entries {
             e.stopWork?.cancel(); e.stopWork = nil
             stop(e)
+        }
+    }
+
+    /// Suppress (or resume) a camera's grid-quality decode while a fullscreen
+    /// high-quality twin is on screen. Called on the main thread.
+    func setShadowed(cameraID id: String, _ on: Bool) {
+        if on {
+            guard !shadowed.contains(id) else { return }
+            shadowed.insert(id)
+            if let e = entries[id] {
+                e.controlQueue.async {
+                    e.player.stop()
+                    e.player.media = nil
+                }
+                appLog("Player[\(id)]: grid decode suspended (covered by fullscreen HQ stream)", .debug)
+            }
+        } else {
+            guard shadowed.remove(id) != nil else { return }
+            // Resume grid-quality playback if the tile is still on screen.
+            if let e = entries[id], e.hostedIn != nil, e.online {
+                resetHealth(e)
+                start(e)
+                appLog("Player[\(id)]: grid decode resumed", .debug)
+            }
         }
     }
 
@@ -396,7 +433,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
-        for e in entries.values where e.hostedIn != nil && e.online {
+        for e in entries.values where e.hostedIn != nil && e.online && !shadowed.contains(e.id) {
             switch e.player.state {
             case .playing, .esAdded:
                 e.lastHealthyAt = now
