@@ -14,28 +14,33 @@ Open **Settings → Stream Deck**:
 
 Endpoints become available at `http://127.0.0.1:<port>`.
 
-## 2. Install the plugin
+## 2. Install the plugin (one click)
 
-The plugin lives in `streamdeck-plugin/com.unifiprotectviewer.sdPlugin`.
+A ready-to-install package is included:
 
-1. (Optional) generate placeholder icons:
-   ```bash
-   cd streamdeck-plugin
-   ./generate-placeholder-icons.sh        # needs ImageMagick
-   ```
-2. Quit the Stream Deck app.
-3. Copy the plugin into the Stream Deck plugins folder:
-   ```bash
-   cp -R streamdeck-plugin/com.unifiprotectviewer.sdPlugin \
-     "$HOME/Library/Application Support/com.elgato.StreamDeck/Plugins/"
-   ```
-4. Relaunch the Stream Deck app. The **UniFi Protect** category appears in the
-   actions list.
+**`streamdeck-plugin/dist/com.unifiprotectviewer.streamDeckPlugin`**
 
-> For development you can instead double-click a packaged `.streamDeckPlugin`
-> file produced with Elgato's
-> [DistributionTool](https://docs.elgato.com/streamdeck/sdk/introduction/getting-started),
-> but copying the folder is the quickest way to test.
+1. Make sure the Stream Deck app is installed and running (**6.4+**).
+2. **Double-click** `com.unifiprotectviewer.streamDeckPlugin`.
+3. Confirm the install prompt. The **UniFi Protect Viewer** category and its
+   actions appear in the Stream Deck actions list — no file copying needed.
+
+### Rebuilding the package from source
+
+The plugin source lives in `streamdeck-plugin/com.unifiprotectviewer.sdPlugin`.
+To regenerate icons and repackage:
+
+```bash
+pip install pillow                       # once, for icon generation
+python3 streamdeck-plugin/generate-icons.py
+streamdeck-plugin/pack.sh                # validates + builds the .streamDeckPlugin
+```
+
+`pack.sh` uses Elgato's official [CLI](https://docs.elgato.com/streamdeck/cli/)
+(`npx @elgato/cli`) to **validate** the plugin and produce the installer, falling
+back to a plain zip if the CLI isn't available (the `.streamDeckPlugin` format is
+a zip of the `.sdPlugin` folder). For live development you can instead link the
+folder with `npx @elgato/cli link streamdeck-plugin/com.unifiprotectviewer.sdPlugin`.
 
 ## 3. Configure buttons
 

@@ -1,0 +1,2 @@
+# Files excluded from the packaged .streamDeckPlugin (gitignore syntax).
+icons/README.md
