@@ -160,6 +160,7 @@ See the main [README](../README.md) for using views/fullscreen and
 | Very high CPU / choppy video with many cameras | Each tile decodes a live stream; 4K×many is heavy. Set default quality (or a per-view quality) to **Low**/**Medium**, and keep **Hardware decoding (VideoToolbox)** on in Settings → Connection → Streaming so decode runs on dedicated silicon instead of the CPU. |
 | Freezes / beachball from high **memory** use (esp. 8 GB Macs) | Decoded-frame RAM scales with resolution. Set **Grid quality = Low** (640×360) — the single biggest reduction. Keep **Hardware decoding** on so decode offloads to VideoToolbox (less CPU + lower memory pressure). The app also frees a stream's buffers when it scrolls off-screen and fully evicts players idle >60 s. Keep the buffer moderate (≈1500 ms) and prefer fewer very-high-res tiles; use Fullscreen (High) for detail on demand. |
 | Green/garbled blocks or decode artifacts on some streams | Turn **Hardware decoding (VideoToolbox)** off in Settings to fall back to software decoding for that camera; then reconnect. |
+| Not sure whether a stream is hardware- or software-decoded | Open the in-app log and look for `VLC decoder …` lines — e.g. *using HARDWARE decoding (VideoToolbox)* or *using SOFTWARE decoding (avcodec)*. Streams that can't be hardware-decoded fall back to software automatically. |
 | Crash on launch referencing VLCKit | Reset package caches; ensure the VLCKit (vlckit-spm) package finished downloading. |
 
 ## Notes on distribution

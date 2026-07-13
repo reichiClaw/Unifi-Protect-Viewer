@@ -136,6 +136,13 @@ can toggle this in **Settings → Connection → Streaming** (turn it off only i
 particular stream shows decode artifacts). The change applies the next time a
 stream (re)connects.
 
+If a stream can't be hardware-decoded (unsupported codec/profile, or the
+hardware decoder errors out), the app **falls back to software decoding for that
+stream automatically** — no action needed. The **actual** decoder chosen per
+stream is written to the in-app log (look for `VLC decoder …` lines, e.g. *using
+HARDWARE decoding (VideoToolbox)* or *using SOFTWARE decoding (avcodec)*), so you
+can confirm what each camera is really using.
+
 ---
 
 ## Security notes

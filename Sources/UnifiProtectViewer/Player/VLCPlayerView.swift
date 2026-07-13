@@ -12,6 +12,61 @@ final class CameraPlaybackStatus: ObservableObject {
     @Published var state: PlaybackStatus = .idle
 }
 
+/// Bridges libvlc's own log output into the app log so we can see the **actual**
+/// decoder each stream ends up using (hardware VideoToolbox vs. software
+/// avcodec). VLCKit doesn't expose the chosen decoder any other way, and the
+/// per-stream config only tells us what was *requested* — this shows what libvlc
+/// actually did, including any automatic hardware→software fallback.
+///
+/// To keep overhead low we accept libvlc's full (debug-level) firehose but
+/// immediately discard everything except decoder/VideoToolbox/avcodec lines,
+/// and de-duplicate so a stream logs its decoder choice once, not per frame.
+final class VLCDecodeLogger: NSObject, VLCLogging {
+    // Handle everything; decoder-selection lines are debug level in libvlc.
+    var level: VLCLogLevel = .debug
+
+    private let lock = NSLock()
+    private var seen = Set<String>()
+
+    func handleMessage(_ message: String, logLevel: VLCLogLevel, context: VLCLogContext?) {
+        let objectType = context?.objectType ?? ""
+        let module = context?.module ?? ""
+        // Cheap gate first: only decoder objects / the video codec modules.
+        guard objectType == "decoder" || module == "videotoolbox" || module == "avcodec" else { return }
+
+        let lower = message.lowercased()
+        // The interesting lines: which decoder module was chosen, and any
+        // hardware-decode / fallback notices.
+        let picksDecoder = lower.contains("decoder module")
+        let mentionsHW = lower.contains("videotoolbox") || lower.contains("video toolbox")
+            || lower.contains("hardware") || lower.contains("hwaccel")
+            || lower.contains("hw decoding") || lower.contains("fall back") || lower.contains("fallback")
+        guard picksDecoder || mentionsHW else { return }
+
+        let objID = context.map { "0x" + String($0.objectId, radix: 16) } ?? "?"
+        // De-dup per (object, message) so we don't spam repeats.
+        let key = objID + "|" + message
+        lock.lock()
+        let isNew = seen.insert(key).inserted
+        if seen.count > 2000 { seen.removeAll(keepingCapacity: true) }
+        lock.unlock()
+        guard isNew else { return }
+
+        let mod = module.isEmpty ? "vlc" : module
+        appLog("VLC decoder [\(mod)#\(objID)]: \(message)", .info)
+
+        // Emit a plain-English summary for the decoder-selection line so the log
+        // is skimmable ("videotoolbox" = hardware, "avcodec" = software).
+        if picksDecoder {
+            if lower.contains("videotoolbox") {
+                appLog("VLC decoder [#\(objID)]: using HARDWARE decoding (VideoToolbox)", .info)
+            } else if lower.contains("avcodec") {
+                appLog("VLC decoder [#\(objID)]: using SOFTWARE decoding (avcodec)", .info)
+            }
+        }
+    }
+}
+
 /// Owns and **reuses** one `VLCMediaPlayer` (and its video surface) per camera.
 ///
 /// Design goals (live control-room wall, 24/7):
@@ -78,6 +133,10 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Fully release (deallocate) a player that has been off-screen this long,
     /// to free its decoder/network buffers — important on low-RAM machines.
     private let evictionSeconds: TimeInterval = 60
+    /// Captures libvlc's log so we can report the actual decoder per stream.
+    /// Held strongly here (the singleton lives for the app's lifetime).
+    private let vlcLogger = VLCDecodeLogger()
+    private var vlcLoggerInstalled = false
 
     override init() {
         super.init()
@@ -186,6 +245,13 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.surface.layer?.backgroundColor = NSColor.black.cgColor
         e.player.drawable = e.surface
         e.player.delegate = self
+        // Route libvlc's log through our bridge once, so the app log records the
+        // actual decoder each stream selects (hardware vs. software).
+        if !vlcLoggerInstalled {
+            e.player.libraryInstance.loggers = [vlcLogger]
+            vlcLoggerInstalled = true
+            appLog("VLC decoder logging enabled — actual decode module per stream will be logged", .debug)
+        }
         entries[id] = e
         return e
     }
@@ -207,22 +273,27 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         media.addOption(":no-audio")
         // Hardware decoding: offload H.264/H.265 decode to Apple's VideoToolbox
         // (dedicated silicon) instead of the CPU. Cuts CPU load and the memory
-        // used by software decode buffers — the main win on low-RAM Macs. When
-        // disabled, force software decoding so a problematic stream can still
-        // render (some cameras trip up VideoToolbox with artifacts).
+        // used by software decode buffers — the main win on low-RAM Macs.
+        //
+        // When enabled we let libvlc try the VideoToolbox decoder module first
+        // and **fall back to software automatically** if a particular stream
+        // can't be hardware-decoded (unsupported codec/profile, or the decoder
+        // errors out) — a seamless per-stream switch, no user action needed.
+        // When disabled we turn the VideoToolbox module off and force plain
+        // software (avcodec) decoding.
         if hardwareDecoding {
-            media.addOption(":avcodec-hw=videotoolbox")
             media.addOption(":videotoolbox=1")
+            media.addOption(":avcodec-hw=any")
         } else {
-            media.addOption(":avcodec-hw=none")
             media.addOption(":videotoolbox=0")
+            media.addOption(":avcodec-hw=none")
         }
         return media
     }
 
     private func start(_ e: Entry) {
-        let decode = e.hardwareDecoding ? "hardware (VideoToolbox)" : "software"
-        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "") [decode: \(decode)]", .debug)
+        let decode = e.hardwareDecoding ? "hardware (VideoToolbox, auto-fallback to software)" : "software"
+        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "") [decode requested: \(decode)]", .debug)
         launch(e, stopFirst: false)
     }
 
@@ -383,8 +454,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.reportedFailure = false
             if !e.announcedPlaying {
                 e.announcedPlaying = true
-                let decode = e.hardwareDecoding ? "hardware (VideoToolbox)" : "software"
-                appLog("Player[\(e.id)]: PLAYING [decode: \(decode)]", .debug)
+                let decode = e.hardwareDecoding ? "hardware (VideoToolbox, auto-fallback to software)" : "software"
+                appLog("Player[\(e.id)]: PLAYING [decode requested: \(decode)] — see 'VLC decoder' lines for the actual module", .debug)
             }
             setStatus(e, .playing)
         case .buffering, .opening:
