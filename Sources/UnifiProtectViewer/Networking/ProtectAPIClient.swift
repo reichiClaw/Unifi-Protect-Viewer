@@ -96,6 +96,12 @@ actor ProtectAPIClient {
 
     var configuredHost: String { host }
 
+    func clearSession() {
+        csrfToken = nil
+        sessionCookie = nil
+        isAuthenticated = false
+    }
+
     // MARK: - Authentication
 
     func login(username: String, password: String, mfaToken: String = "") async throws {
@@ -304,6 +310,7 @@ actor ProtectAPIClient {
         case 200...299:
             return data
         case 401, 403:
+            isAuthenticated = false
             let bodyText = String(data: data, encoding: .utf8) ?? ""
             appLog("\(method) \(path) failed HTTP \(http.statusCode): \(bodyText)", .error)
             if method != "GET" { throw ProtectAPIError.insufficientPermissions }
