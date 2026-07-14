@@ -53,6 +53,8 @@ const MOVE_DIRS = {
 	[ACTIONS.ZOOM_IN]: { dx: 0, dy: 0, dz: -1 },
 	[ACTIONS.ZOOM_OUT]: { dx: 0, dy: 0, dz: 1 },
 };
+const heldMoves = new Map(); // button context -> { action, settings }
+const moveHeartbeats = new Map(); // connection key -> interval
 
 function defaults(settings) {
 	return {
@@ -116,6 +118,7 @@ function handleSDMessage(msg) {
 				refreshButton(context);
 				break;
 			case "willDisappear":
+				releaseMove(context);
 				buttons.delete(context);
 				pruneConnections();
 				break;
@@ -168,8 +171,9 @@ function evaluateProfileSwitch(snapshot) {
 async function onKeyDown(action, context, s) {
 	// Hold-to-move actions: start moving in the given direction on press.
 	if (MOVE_DIRS[action]) {
-		const d = MOVE_DIRS[action];
-		await postMove(context, s, { dx: d.dx, dy: d.dy, dz: d.dz });
+		heldMoves.set(context, { action, settings: s });
+		await sendCombinedMove(context, s);
+		ensureMoveHeartbeat(s);
 		return;
 	}
 	let path = null;
@@ -234,8 +238,68 @@ async function onKeyDown(action, context, s) {
 // Stop continuous movement when a hold-to-move key is released.
 async function onKeyUp(action, context, s) {
 	if (MOVE_DIRS[action]) {
-		await postMove(context, s, { dx: 0, dy: 0, dz: 0 });
+		heldMoves.delete(context);
+		await sendCombinedMove(context, s);
+		updateMoveHeartbeat(s);
 	}
+}
+
+function moveKey(s) { return `${s.host}:${s.port}:${s.token || ""}`; }
+
+function combinedMove(s) {
+	const key = moveKey(s);
+	const result = { dx: 0, dy: 0, dz: 0 };
+	for (const [, held] of heldMoves) {
+		if (moveKey(held.settings) !== key) continue;
+		const d = MOVE_DIRS[held.action];
+		if (!d) continue;
+		result.dx += d.dx;
+		result.dy += d.dy;
+		result.dz += d.dz;
+	}
+	result.dx = Math.sign(result.dx);
+	result.dy = Math.sign(result.dy);
+	result.dz = Math.sign(result.dz);
+	return result;
+}
+
+function firstHeldFor(s) {
+	const key = moveKey(s);
+	for (const [context, held] of heldMoves) {
+		if (moveKey(held.settings) === key) return { context, settings: held.settings };
+	}
+	return null;
+}
+
+async function sendCombinedMove(context, s) {
+	await postMove(context, s, combinedMove(s));
+}
+
+function ensureMoveHeartbeat(s) {
+	const key = moveKey(s);
+	if (moveHeartbeats.has(key)) return;
+	const timer = setInterval(() => {
+		const held = firstHeldFor(s);
+		if (held) postMove(held.context, held.settings, combinedMove(held.settings));
+		else updateMoveHeartbeat(s);
+	}, 750);
+	moveHeartbeats.set(key, timer);
+}
+
+function updateMoveHeartbeat(s) {
+	const key = moveKey(s);
+	if (firstHeldFor(s)) return;
+	const timer = moveHeartbeats.get(key);
+	if (timer) clearInterval(timer);
+	moveHeartbeats.delete(key);
+}
+
+function releaseMove(context) {
+	const held = heldMoves.get(context);
+	if (!held) return;
+	heldMoves.delete(context);
+	sendCombinedMove(context, held.settings);
+	updateMoveHeartbeat(held.settings);
 }
 
 // Send a continuous-move command (dx/dy/dz; all zero = stop) to the app.

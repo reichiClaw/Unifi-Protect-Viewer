@@ -30,6 +30,7 @@ final class AppState: ObservableObject {
 
     // MARK: Private
     private let apiClient = ProtectAPIClient()
+    private lazy var ptzController = PTZController(apiClient: apiClient)
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
     /// Last cameras loaded from the UniFi controller (merged with manual ones).
@@ -44,11 +45,6 @@ final class AppState: ObservableObject {
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
     private var lastMemWarning = Date.distantPast
-    /// Safety: auto-stop continuous PTZ movement if a "stop" is never received
-    /// (e.g. a missed button release or a dropped request), so the camera can't
-    /// run away.
-    private var ptzSafetyStop: DispatchWorkItem?
-    private let ptzMaxMoveSeconds: TimeInterval = 4
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -258,6 +254,7 @@ final class AppState: ObservableObject {
     }
 
     func disconnect() {
+        stopPTZ(cameraID: fullscreenCameraID)
         connectionState = .disconnected
         statusMessage = "Disconnected."
         fullscreenCameraID = nil
@@ -398,6 +395,7 @@ final class AppState: ObservableObject {
 
     func selectView(_ id: UUID) {
         guard config.views.contains(where: { $0.id == id }) else { return }
+        stopPTZ(cameraID: fullscreenCameraID)
         selectedViewID = id
         fullscreenCameraID = nil
         broadcastSnapshot()
@@ -465,11 +463,15 @@ final class AppState: ObservableObject {
 
     func showFullscreen(cameraID: String) {
         guard camerasByID[cameraID] != nil else { return }
+        if let current = fullscreenCameraID, current != cameraID {
+            stopPTZ(cameraID: current)
+        }
         fullscreenCameraID = cameraID
         broadcastSnapshot()
     }
 
     func exitFullscreen() {
+        stopPTZ(cameraID: fullscreenCameraID)
         fullscreenCameraID = nil
         broadcastSnapshot()
     }
@@ -497,36 +499,20 @@ final class AppState: ObservableObject {
     @discardableResult
     func ptzMove(cameraID: String?, dx: Int, dy: Int, dz: Int) -> Bool {
         let cam = cameraID.flatMap { camerasByID[$0] } ?? fullscreenCamera
-        guard let cam = cam else { return false }
+        guard let cam = cam, cam.isPTZ, !cam.isManual else { return false }
         let id = cam.id
         let speed = ProtectAPIClient.ptzMoveSpeed
         let x = dx.signum() * speed
         let y = dy.signum() * speed
         let z = dz.signum() * speed
-        let moving = (x != 0 || y != 0 || z != 0)
-
-        ptzSafetyStop?.cancel(); ptzSafetyStop = nil
-
-        Task { [apiClient] in
-            do {
-                try await apiClient.ptzMove(cameraID: id, x: x, y: y, z: z)
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                appLog("PTZ move failed: \(message)", .error)
-            }
-        }
-
-        if moving {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                self.ptzSafetyStop = nil
-                appLog("PTZ safety auto-stop after \(Int(self.ptzMaxMoveSeconds))s", .warn)
-                Task { [apiClient = self.apiClient] in try? await apiClient.ptzStop(cameraID: id) }
-            }
-            ptzSafetyStop = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + ptzMaxMoveSeconds, execute: work)
+        Task { [ptzController] in
+            await ptzController.move(cameraID: id, x: x, y: y, z: z)
         }
         return true
+    }
+
+    private func stopPTZ(cameraID: String? = nil) {
+        Task { [ptzController] in await ptzController.stop(cameraID: cameraID) }
     }
 
     // MARK: - Control server
@@ -641,17 +627,23 @@ extension AppState: ControlServerHandler {
         // buttons control "whatever PTZ camera is on screen" with no per-button
         // configuration.
         let cam = resolveCamera(id: cameraID, index: index, name: name) ?? fullscreenCamera
-        guard let cam = cam else { return false }
+        guard let cam = cam, cam.isPTZ, !cam.isManual else { return false }
+        let allowed = ["home", "goto", "patrol-start", "patrol-stop"]
+        guard allowed.contains(action) else { return false }
+        if action == "goto" || action == "patrol-start" {
+            guard (0...31).contains(slot) else { return false }
+        }
         let id = cam.id
         appLog("PTZ \(action) slot=\(slot) on \"\(cam.displayName)\"")
-        Task {
+        Task { [ptzController, apiClient] in
             do {
+                await ptzController.stop(cameraID: id)
                 switch action {
                 case "home": try await apiClient.ptzGoto(cameraID: id, slot: -1)
                 case "goto": try await apiClient.ptzGoto(cameraID: id, slot: slot)
                 case "patrol-start": try await apiClient.ptzPatrolStart(cameraID: id, slot: slot)
                 case "patrol-stop": try await apiClient.ptzPatrolStop(cameraID: id)
-                default: break
+                default: return
                 }
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription

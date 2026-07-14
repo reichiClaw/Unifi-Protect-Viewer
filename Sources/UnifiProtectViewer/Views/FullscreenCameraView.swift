@@ -251,6 +251,7 @@ private struct PTZHoldButton: View {
     let onPress: () -> Void
     let onRelease: () -> Void
     @State private var pressing = false
+    @State private var heartbeat: Task<Void, Never>?
 
     var body: some View {
         Image(systemName: system)
@@ -262,13 +263,39 @@ private struct PTZHoldButton: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
-                        if !pressing { pressing = true; onPress() }
+                        if !pressing { beginPress() }
                     }
                     .onEnded { _ in
-                        pressing = false; onRelease()
+                        endPress()
                     }
             )
             .help(help)
+            .onDisappear {
+                if pressing { endPress() }
+                heartbeat?.cancel()
+            }
+    }
+
+    private func beginPress() {
+        pressing = true
+        onPress()
+        heartbeat?.cancel()
+        heartbeat = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    if pressing { onPress() }
+                }
+            }
+        }
+    }
+
+    private func endPress() {
+        heartbeat?.cancel()
+        heartbeat = nil
+        pressing = false
+        onRelease()
     }
 }
 
