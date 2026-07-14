@@ -6,11 +6,13 @@ struct FullscreenCameraView: View {
     let camera: ProtectCamera
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var status: CameraPlaybackStatus
+    @ObservedObject private var highStatus: CameraPlaybackStatus
     @State private var showControls = true
 
     init(camera: ProtectCamera) {
         self.camera = camera
         _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
+        _highStatus = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id + "#fs"))
     }
 
     var body: some View {
@@ -62,7 +64,7 @@ struct FullscreenCameraView: View {
     }
 
     private var statusColor: Color {
-        switch status.state {
+        switch displayedStatus {
         case .playing: return .green
         case .offline: return .red
         case .error: return .orange
@@ -71,12 +73,16 @@ struct FullscreenCameraView: View {
     }
 
     private var statusText: String {
-        switch status.state {
+        switch displayedStatus {
         case .playing: return "Live"
         case .offline: return "Offline"
         case .error: return "Reconnecting…"
         case .buffering, .idle: return "Connecting…"
         }
+    }
+
+    private var displayedStatus: PlaybackStatus {
+        needsUpgrade && highStatus.state == .playing ? highStatus.state : status.state
     }
 
     private var gridURL: URL? {
@@ -301,6 +307,7 @@ private struct UpgradeVideoLayer: View {
             }
             .onDisappear {
                 CameraPlayerManager.shared.setShadowed(cameraID: shadowCameraID, false)
+                CameraPlayerManager.shared.release(cameraID: streamKey)
             }
     }
 }

@@ -91,6 +91,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var activeURL: URL?
         var triedFallback = false
         var stopWork: DispatchWorkItem?
+        var launchWork: DispatchWorkItem?
+        var launchGeneration: UInt64 = 0
+        var isRecreating = false
         weak var hostedIn: NSView?
         var caching = 1500
         var muted = true
@@ -112,6 +115,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         init(id: String) {
             self.id = id
             controlQueue = DispatchQueue(label: "com.unifiprotectviewer.vlc.\(id)")
+            idleSince = Date()
         }
     }
 
@@ -216,10 +220,17 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         if !online {
             let wasOnline = e.online
             e.online = false
+            invalidateLaunch(e)
             e.requestedURL = url
             e.activeURL = url
             setStatus(e, .offline)
-            if wasOnline { e.controlQueue.async { e.player.stop() } }
+            if wasOnline {
+                let player = e.player
+                e.controlQueue.async {
+                    player.stop()
+                    player.media = nil
+                }
+            }
             return
         }
 
@@ -266,10 +277,20 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     func stopAll() {
+        shadowed.removeAll()
         for (_, e) in entries {
             e.stopWork?.cancel(); e.stopWork = nil
             stop(e)
         }
+    }
+
+    /// Immediately release a short-lived stream (used for fullscreen HQ
+    /// players) instead of keeping it warm for the normal idle grace period.
+    func release(cameraID id: String) {
+        guard let e = entries[id] else { return }
+        e.surface.removeFromSuperview()
+        e.hostedIn = nil
+        evict(id)
     }
 
     /// Suppress (or resume) a camera's grid-quality decode while a fullscreen
@@ -279,9 +300,11 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             guard !shadowed.contains(id) else { return }
             shadowed.insert(id)
             if let e = entries[id] {
+                invalidateLaunch(e)
+                let player = e.player
                 e.controlQueue.async {
-                    e.player.stop()
-                    e.player.media = nil
+                    player.stop()
+                    player.media = nil
                 }
                 appLog("Player[\(id)]: grid decode suspended (covered by fullscreen HQ stream)", .debug)
             }
@@ -331,6 +354,12 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         return e
     }
 
+    private func invalidateLaunch(_ e: Entry) {
+        e.launchGeneration &+= 1
+        e.launchWork?.cancel()
+        e.launchWork = nil
+    }
+
     private func resetHealth(_ e: Entry) {
         let now = Date()
         e.startedAt = now
@@ -378,6 +407,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// player is stopped on its background queue first (clean recovery).
     private func launch(_ e: Entry, stopFirst: Bool) {
         guard let url = e.activeURL else { return }
+        invalidateLaunch(e)
+        let generation = e.launchGeneration
+        let expectedPlayer = e.player
         setStatus(e, .buffering)
         let now = Date()
         e.startedAt = now
@@ -389,15 +421,31 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         nextStartAt = at.addingTimeInterval(startStagger)
         let delay = max(0, at.timeIntervalSince(now))
 
-        let play: () -> Void = { [weak self, weak e] in
-            guard let self = self, let e = e, e.hostedIn != nil else { return }
-            e.player.media = self.makeMedia(url: url, caching: caching, hardwareDecoding: hardwareDecoding)
-            e.player.play()
+        let play = DispatchWorkItem { [weak self, weak e, weak expectedPlayer] in
+            guard let self = self,
+                  let e = e,
+                  let expectedPlayer = expectedPlayer,
+                  let current = self.entries[e.id],
+                  current === e,
+                  e.launchGeneration == generation,
+                  e.player === expectedPlayer,
+                  e.hostedIn != nil,
+                  e.online,
+                  !e.isRecreating,
+                  !self.shadowed.contains(e.id),
+                  e.activeURL == url else { return }
+            e.launchWork = nil
+            expectedPlayer.media = self.makeMedia(url: url,
+                                                  caching: caching,
+                                                  hardwareDecoding: hardwareDecoding)
+            expectedPlayer.play()
         }
+        e.launchWork = play
 
         if stopFirst {
-            e.controlQueue.async { [weak e] in
-                e?.player.stop()
+            e.controlQueue.async { [weak e, weak expectedPlayer] in
+                guard let e = e, let expectedPlayer = expectedPlayer else { return }
+                expectedPlayer.stop()
                 DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: play)
             }
         } else {
@@ -406,32 +454,52 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private func stop(_ e: Entry) {
+        invalidateLaunch(e)
         setStatus(e, .idle)
         e.idleSince = Date()
+        let player = e.player
         e.controlQueue.async {
-            e.player.stop()
+            player.stop()
             // Release the media so its demux/decoder/network buffers are freed
             // while the camera is off-screen (frees RAM on the wall).
-            e.player.media = nil
+            player.media = nil
         }
     }
 
-    /// Replace an entry's `VLCMediaPlayer` with a fresh object, reusing the same
-    /// video surface. Clears libvlc-internal state/leaks that `stop()` +
-    /// `media = nil` don't — used both for periodic maintenance and to break an
-    /// error loop that restarting the same player can't. Caller then `launch`es.
-    private func recreatePlayer(_ e: Entry) {
+    /// Stop and fully release the old player before installing and launching a
+    /// replacement. The generation guard prevents a late teardown completion
+    /// from resurrecting a stream that has since been stopped or evicted.
+    private func recreateAndLaunch(_ e: Entry) {
+        guard !e.isRecreating else { return }
+        invalidateLaunch(e)
+        let generation = e.launchGeneration
+        e.isRecreating = true
         let old = e.player
         old.delegate = nil
         old.drawable = nil
-        let fresh = VLCMediaPlayer()
-        fresh.drawable = e.surface
-        fresh.delegate = self
-        e.player = fresh
-        e.playerCreatedAt = Date()
-        e.controlQueue.async {
+        e.controlQueue.async { [weak self, weak e] in
             old.stop()
             old.media = nil
+            DispatchQueue.main.async {
+                guard let self = self, let e = e else { return }
+                guard let current = self.entries[e.id],
+                      current === e,
+                      e.launchGeneration == generation,
+                      e.hostedIn != nil,
+                      e.online,
+                      !self.shadowed.contains(e.id) else {
+                    e.isRecreating = false
+                    return
+                }
+                let fresh = VLCMediaPlayer()
+                fresh.drawable = e.surface
+                fresh.delegate = self
+                e.player = fresh
+                e.playerCreatedAt = Date()
+                e.isRecreating = false
+                self.resetHealth(e)
+                self.launch(e, stopFirst: false)
+            }
         }
     }
 
@@ -439,6 +507,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func evict(_ id: String) {
         guard let e = entries[id] else { return }
         e.stopWork?.cancel(); e.stopWork = nil
+        invalidateLaunch(e)
         e.player.delegate = nil
         e.player.drawable = nil
         entries.removeValue(forKey: id)
@@ -458,7 +527,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
-        for e in entries.values where e.hostedIn != nil && e.online && !shadowed.contains(e.id) {
+        for e in entries.values where e.hostedIn != nil && e.online && !e.isRecreating && !shadowed.contains(e.id) {
             switch e.player.state {
             case .playing, .esAdded:
                 e.lastHealthyAt = now
@@ -488,9 +557,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                 && now.timeIntervalSince($0.playerCreatedAt) > maxPlayerLifetime
         }) {
             appLog("Player[\(old.id)]: scheduled recreation after \(Int(now.timeIntervalSince(old.playerCreatedAt) / 3600))h uptime to free memory", .debug)
-            recreatePlayer(old)
-            resetHealth(old)
-            launch(old, stopFirst: false)
+            recreateAndLaunch(old)
         }
 
         // Evict players that have been off-screen long enough, to free memory.
@@ -519,8 +586,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         // cannot, and clears any accumulated libvlc state.
         if e.recoveryAttempts >= 3, e.recoveryAttempts % 3 == 0 {
             appLog("Player[\(e.id)]: recreating player object after \(e.recoveryAttempts) failed attempts", .warn)
-            recreatePlayer(e)
-            launch(e, stopFirst: false)
+            recreateAndLaunch(e)
         } else {
             launch(e, stopFirst: true)
         }
