@@ -113,10 +113,12 @@ function initUI() {
 function connectAppWS() {
 	const host = el("host").value || "127.0.0.1";
 	const port = el("port").value || "8723";
+	const token = el("token").value || "";
 	if (appWSReconnect) { clearTimeout(appWSReconnect); appWSReconnect = null; }
 	if (appWS) { try { appWS.close(); } catch (e) { /* ignore */ } appWS = null; }
 	try {
-		appWS = new WebSocket(`ws://${host}:${port}/ws`);
+		const auth = token ? `?token=${encodeURIComponent(token)}` : "";
+		appWS = new WebSocket(`ws://${host}:${port}/ws${auth}`);
 	} catch (e) {
 		return;
 	}

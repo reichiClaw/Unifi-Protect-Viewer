@@ -342,24 +342,28 @@ private struct ControlSettingsTab: View {
     @State private var enabled: Bool = true
     @State private var port: String = "8723"
     @State private var token: String = ""
+    @State private var allowLAN: Bool = false
 
     var body: some View {
         Form {
             Section {
                 Toggle("Enable control server", isOn: $enabled)
                 TextField("Port", text: $port)
-                TextField("Auth token (optional)", text: $token)
+                Toggle("Allow control from other computers (LAN)", isOn: $allowLAN)
+                SecureField(allowLAN ? "Auth token (required)" : "Auth token (optional)", text: $token)
+                Button("Generate secure token") { token = ControlServerSettings.makeToken() }
             } header: {
-                Text("Local Control Server")
+                Text("Control Server")
             } footer: {
-                Text("The Stream Deck plugin connects to this server to switch views and pop cameras fullscreen. Leave the token blank for an unauthenticated local-only server, or set one and enter the same value in the plugin.")
+                Text("By default the server listens only on this Mac (127.0.0.1). LAN access is opt-in and always requires a token. Enter the same token in every Stream Deck button.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
 
             Section("Endpoint") {
-                LabeledContent("Base URL", value: "http://127.0.0.1:\(port)")
-                LabeledContent("WebSocket", value: "ws://127.0.0.1:\(port)/ws")
+                LabeledContent("Binding", value: allowLAN ? "All LAN interfaces" : "This Mac only")
+                LabeledContent("Base URL", value: allowLAN ? "http://<this-mac-ip>:\(port)" : "http://127.0.0.1:\(port)")
+                LabeledContent("WebSocket", value: allowLAN ? "ws://<this-mac-ip>:\(port)/ws" : "ws://127.0.0.1:\(port)/ws")
                 LabeledContent("Status", value: appState.config.control.enabled ? "Running" : "Stopped")
             }
 
@@ -380,12 +384,17 @@ private struct ControlSettingsTab: View {
         enabled = appState.config.control.enabled
         port = String(appState.config.control.port)
         token = appState.config.control.token
+        allowLAN = appState.config.control.allowLAN
     }
 
     private func apply() {
         appState.config.control.enabled = enabled
         appState.config.control.port = UInt16(port) ?? 8723
-        appState.config.control.token = token
+        appState.config.control.allowLAN = allowLAN
+        appState.config.control.token = allowLAN && token.isEmpty
+            ? ControlServerSettings.makeToken()
+            : token
+        token = appState.config.control.token
         appState.saveConfig()
         appState.restartControlServer()
     }

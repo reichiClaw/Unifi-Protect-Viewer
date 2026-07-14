@@ -157,6 +157,24 @@ struct AppConfiguration: Codable {
 struct ControlServerSettings: Codable, Equatable {
     var enabled: Bool = true
     var port: UInt16 = 8723
+    /// Bind to all IPv4 interfaces so another machine can control the viewer.
+    /// Disabled by default: the Stream Deck normally runs on this Mac.
+    var allowLAN: Bool = false
     /// Shared secret required on control requests. Empty = no auth (local only).
     var token: String = ""
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 8723
+        allowLAN = try c.decodeIfPresent(Bool.self, forKey: .allowLAN) ?? false
+        token = try c.decodeIfPresent(String.self, forKey: .token) ?? ""
+    }
+
+    static func makeToken() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
 }

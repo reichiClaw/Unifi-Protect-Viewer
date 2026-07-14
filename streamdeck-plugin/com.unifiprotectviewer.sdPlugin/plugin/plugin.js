@@ -302,7 +302,8 @@ class AppConnection {
 	}
 	connect() {
 		if (this.closed) return;
-		const url = `ws://${this.settings.host}:${this.settings.port}/ws`;
+		const auth = this.settings.token ? `?token=${encodeURIComponent(this.settings.token)}` : "";
+		const url = `ws://${this.settings.host}:${this.settings.port}/ws${auth}`;
 		try {
 			this.ws = new WebSocket(url);
 		} catch (e) {

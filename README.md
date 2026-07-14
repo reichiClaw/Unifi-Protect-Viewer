@@ -153,8 +153,8 @@ can confirm what each camera is really using.
 
 - The password is stored only in the macOS Keychain.
 - TLS validation is relaxed **only** for the exact controller host you configure.
-- The control server binds locally; set an **auth token** in Settings if you want
-  to require one (and enter the same token in the Stream Deck plugin).
+- The control server binds to **127.0.0.1** by default. LAN access is explicit
+  opt-in and cannot start without an authentication token.
 
 ---
 

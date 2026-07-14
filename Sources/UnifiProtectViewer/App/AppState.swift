@@ -539,7 +539,9 @@ final class AppState: ObservableObject {
         if controlServer == nil {
             controlServer = ControlServer(handler: self)
         }
-        controlServer?.start(port: config.control.port, token: config.control.token)
+        controlServer?.start(port: config.control.port,
+                             token: config.control.token,
+                             allowLAN: config.control.allowLAN)
     }
 
     func restartControlServer() {
