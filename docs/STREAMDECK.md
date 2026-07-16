@@ -36,11 +36,11 @@ python3 streamdeck-plugin/generate-icons.py
 streamdeck-plugin/pack.sh                # validates + builds the .streamDeckPlugin
 ```
 
-`pack.sh` uses Elgato's official [CLI](https://docs.elgato.com/streamdeck/cli/)
-(`npx @elgato/cli`) to **validate** the plugin and produce the installer, falling
-back to a plain zip if the CLI isn't available (the `.streamDeckPlugin` format is
-a zip of the `.sdPlugin` folder). For live development you can instead link the
-folder with `npx @elgato/cli link streamdeck-plugin/com.unifiprotectviewer.sdPlugin`.
+`pack.sh` uses a pinned release of Elgato's official
+[CLI](https://docs.elgato.com/streamdeck/cli/) to **validate** the plugin before
+producing the installer; it fails rather than publishing an unvalidated package.
+GitHub Actions runs the same checks. For live development you can instead link
+the folder with `npx @elgato/cli link streamdeck-plugin/com.unifiprotectviewer.sdPlugin`.
 
 ## 3. Configure buttons
 
@@ -101,9 +101,9 @@ cluster for a joystick-like layout.
 
 The plugin can automatically switch your Stream Deck to a dedicated **PTZ
 profile** the moment a PTZ camera goes fullscreen, and switch back when you
-leave fullscreen. Because Stream Deck profiles are device-specific and must be
-designed by you (preset slots map to *your* saved camera positions), this is a
-one-time setup:
+leave fullscreen. This is disabled in the standard package because profiles
+are device-specific and must be designed by you (preset slots map to *your*
+saved camera positions). To build a customized package:
 
 1. In the Stream Deck app, create a new **profile** and name it exactly
    **`UniFi Protect PTZ`**.
@@ -120,7 +120,9 @@ one-time setup:
      { "Name": "UniFi Protect PTZ", "DeviceType": 0, "Readonly": false, "DontAutoSwitchWhenInstalled": true }
    ]
    ```
-5. Restart the Stream Deck app.
+5. Set `PTZ_PROFILE` in `plugin/plugin.js` from `null` to
+   `"UniFi Protect PTZ"`.
+6. Run `streamdeck-plugin/pack.sh` and install the rebuilt package.
 
 Now, when you make a PTZ camera fullscreen (in the app or via a **Camera
 Fullscreen** button), the Stream Deck jumps to your PTZ profile; leaving

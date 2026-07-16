@@ -1,0 +1,30 @@
+name: Validate Stream Deck plugin
+
+on:
+  pull_request:
+    paths:
+      - "streamdeck-plugin/**"
+      - ".github/workflows/streamdeck-plugin.yml"
+  push:
+    branches: [main]
+    paths:
+      - "streamdeck-plugin/**"
+
+jobs:
+  validate-and-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Validate JavaScript
+        run: |
+          node --check streamdeck-plugin/com.unifiprotectviewer.sdPlugin/plugin/plugin.js
+          node --check streamdeck-plugin/com.unifiprotectviewer.sdPlugin/pi/inspector.js
+      - name: Validate and package
+        run: streamdeck-plugin/pack.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: com.unifiprotectviewer.streamDeckPlugin
+          path: streamdeck-plugin/dist/com.unifiprotectviewer.streamDeckPlugin

@@ -22,6 +22,7 @@ struct SettingsView: View {
 
 private struct ReliabilitySettingsTab: View {
     @State private var autoRestart = LaunchAgentInstaller.isInstalled
+    @State private var agentLoaded = LaunchAgentInstaller.isLoaded
     @State private var errorMessage: String?
 
     var body: some View {
@@ -31,6 +32,8 @@ private struct ReliabilitySettingsTab: View {
                     get: { autoRestart },
                     set: { setAutoRestart($0) }
                 ))
+                LabeledContent("LaunchAgent status",
+                               value: agentLoaded ? "Loaded" : (autoRestart ? "Installed but not loaded" : "Disabled"))
             } header: {
                 Text("Auto-restart (recommended for 24/7 walls)")
             } footer: {
@@ -71,9 +74,11 @@ private struct ReliabilitySettingsTab: View {
             if on { try LaunchAgentInstaller.install() }
             else { try LaunchAgentInstaller.uninstall() }
             autoRestart = LaunchAgentInstaller.isInstalled
+            agentLoaded = LaunchAgentInstaller.isLoaded
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             autoRestart = LaunchAgentInstaller.isInstalled
+            agentLoaded = LaunchAgentInstaller.isLoaded
         }
     }
 

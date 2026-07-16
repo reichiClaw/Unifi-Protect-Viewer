@@ -171,6 +171,14 @@ async function loadState() {
 		const res = await fetchWithTimeout(`http://${host}:${port}/api/state`, {
 			headers: { "X-Auth-Token": token },
 		}, 4000);
+		if (res.status === 401) {
+			setStatus("Authentication failed. Check the token in the viewer and this button.");
+			return;
+		}
+		if (!res.ok) {
+			setStatus(`Viewer returned HTTP ${res.status}.`);
+			return;
+		}
 		const data = await res.json();
 		const snap = data.snapshot || data;
 		populateViews(snap.views || []);

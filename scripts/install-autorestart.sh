@@ -17,9 +17,11 @@ set -euo pipefail
 
 LABEL="com.unifiprotectviewer.autorestart"
 PLIST="$HOME/Library/LaunchAgents/${LABEL}.plist"
+DOMAIN="gui/$(id -u)"
+LOG_DIR="$HOME/Library/Application Support/UnifiProtectViewer"
 
 if [[ "${1:-}" == "--uninstall" ]]; then
-  launchctl unload -w "$PLIST" 2>/dev/null || true
+  launchctl bootout "${DOMAIN}/${LABEL}" 2>/dev/null || true
   rm -f "$PLIST"
   echo "Removed auto-restart LaunchAgent ($PLIST)."
   exit 0
@@ -35,6 +37,7 @@ if [[ ! -x "$EXE" ]]; then
 fi
 
 mkdir -p "$(dirname "$PLIST")"
+mkdir -p "$LOG_DIR"
 cat > "$PLIST" <<PLISTEOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,14 +56,21 @@ cat > "$PLIST" <<PLISTEOF
     </dict>
     <key>ProcessType</key>
     <string>Interactive</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>StandardOutPath</key>
+    <string>${LOG_DIR}/launchd.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>${LOG_DIR}/launchd.stderr.log</string>
     <key>ThrottleInterval</key>
-    <integer>5</integer>
+    <integer>15</integer>
 </dict>
 </plist>
 PLISTEOF
 
-launchctl unload "$PLIST" 2>/dev/null || true
-launchctl load -w "$PLIST"
+launchctl bootout "${DOMAIN}/${LABEL}" 2>/dev/null || true
+launchctl bootstrap "$DOMAIN" "$PLIST"
+launchctl enable "${DOMAIN}/${LABEL}"
 echo "Installed auto-restart LaunchAgent for: $EXE"
 echo "Plist: $PLIST"
 echo "Disable with: $0 --uninstall  (or Settings → Reliability in the app)"

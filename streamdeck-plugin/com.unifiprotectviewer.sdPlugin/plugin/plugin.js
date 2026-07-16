@@ -8,6 +8,9 @@
 
 let sd = null; // Stream Deck websocket
 let pluginUUID = null;
+let sdRegistration = null;
+let sdReconnectTimer = null;
+let sdReconnectDelay = 1000;
 
 // context -> { action, settings }
 const buttons = new Map();
@@ -22,7 +25,9 @@ const devices = new Set();
 // To enable auto-switching, create a profile with this exact name containing
 // your PTZ actions, export it into the plugin folder, and add it to the
 // manifest "Profiles" array (see docs/STREAMDECK.md).
-const PTZ_PROFILE = "UniFi Protect PTZ";
+// Set to a bundled profile name only when that profile is actually included in
+// manifest.json. Disabled by default to avoid switching to a nonexistent page.
+const PTZ_PROFILE = null;
 let ptzProfileActive = false;
 
 const ACTIONS = {
@@ -87,23 +92,53 @@ function fetchWithTimeout(url, options, timeoutMs) {
 // ---------------------------------------------------------------------------
 function connectElgatoStreamDeckSocket(inPort, inPluginUUID, inRegisterEvent, inInfo) {
 	pluginUUID = inPluginUUID;
+	sdRegistration = { port: inPort, event: inRegisterEvent, uuid: inPluginUUID };
 	// Seed the known devices from the registration info.
 	try {
 		const info = JSON.parse(inInfo);
 		(info.devices || []).forEach((d) => { if (d && d.id) devices.add(d.id); });
 	} catch (e) { /* ignore */ }
 
-	sd = new WebSocket(`ws://127.0.0.1:${inPort}`);
+	openStreamDeckSocket();
+}
 
+function openStreamDeckSocket() {
+	if (!sdRegistration) return;
+	if (sdReconnectTimer) { clearTimeout(sdReconnectTimer); sdReconnectTimer = null; }
+	sd = new WebSocket(`ws://127.0.0.1:${sdRegistration.port}`);
 	sd.onopen = () => {
-		sd.send(JSON.stringify({ event: inRegisterEvent, uuid: inPluginUUID }));
+		sdReconnectDelay = 1000;
+		sd.send(JSON.stringify({ event: sdRegistration.event, uuid: sdRegistration.uuid }));
 	};
-
 	sd.onmessage = (evt) => {
 		let msg;
 		try { msg = JSON.parse(evt.data); } catch (e) { return; }
 		handleSDMessage(msg);
 	};
+	sd.onerror = () => { try { sd.close(); } catch (e) { /* ignore */ } };
+	sd.onclose = () => {
+		stopAllHeldMoves();
+		if (sdReconnectTimer) return;
+		sdReconnectTimer = setTimeout(() => {
+			sdReconnectTimer = null;
+			openStreamDeckSocket();
+		}, sdReconnectDelay);
+		sdReconnectDelay = Math.min(sdReconnectDelay * 2, 30000);
+	};
+}
+
+function stopAllHeldMoves() {
+	const stopped = new Set();
+	for (const [context, held] of heldMoves) {
+		const key = moveKey(held.settings);
+		if (!stopped.has(key)) {
+			stopped.add(key);
+			postMove(context, held.settings, { dx: 0, dy: 0, dz: 0 });
+		}
+	}
+	heldMoves.clear();
+	for (const [, timer] of moveHeartbeats) clearInterval(timer);
+	moveHeartbeats.clear();
 }
 // Expose globally for Stream Deck.
 window.connectElgatoStreamDeckSocket = connectElgatoStreamDeckSocket;
@@ -129,10 +164,10 @@ function handleSDMessage(msg) {
 				refreshButton(context);
 				break;
 			case "keyDown":
-				onKeyDown(action, context, defaults(payload && payload.settings));
+				onKeyDown(action, context, buttons.get(context)?.settings || defaults(payload && payload.settings));
 				break;
 			case "keyUp":
-				onKeyUp(action, context, defaults(payload && payload.settings));
+				onKeyUp(action, context, buttons.get(context)?.settings || defaults(payload && payload.settings));
 				break;
 			case "deviceDidConnect":
 				if (msg.device) devices.add(msg.device);
@@ -150,6 +185,7 @@ function handleSDMessage(msg) {
 
 // Switch to the PTZ profile when a PTZ camera is fullscreen, and back when not.
 function evaluateProfileSwitch(snapshot) {
+	if (!PTZ_PROFILE) return;
 	const want = !!(snapshot && snapshot.fullscreenCameraPtz);
 	if (want === ptzProfileActive) return;
 	ptzProfileActive = want;

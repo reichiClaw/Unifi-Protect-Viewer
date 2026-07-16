@@ -17,6 +17,11 @@ A normal **Quit** (⌘Q) is respected and will **not** relaunch. If you move or
 rename the app after enabling this, toggle it off and on again so the restart
 points at the new location.
 
+The app prevents duplicate instances and automatically disables the LaunchAgent
+after repeated abnormal launches in a short window, preserving logs instead of
+entering an endless crash loop. Settings shows whether the agent is actually
+loaded in the current GUI session.
+
 You can also install it from the command line (useful for headless setups):
 
 ```bash
