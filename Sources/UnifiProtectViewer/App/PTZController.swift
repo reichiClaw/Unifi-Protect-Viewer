@@ -20,21 +20,21 @@ actor PTZController {
         let moving = x != 0 || y != 0 || z != 0
 
         if !moving {
-            await stop(cameraID: cameraID)
+            _ = await stop(cameraID: cameraID)
             return
+        }
+
+        if let previousCamera = activeCameraID, previousCamera != cameraID {
+            guard await stop(cameraID: previousCamera) else { return }
         }
 
         generation &+= 1
         let commandGeneration = generation
-        let previousCamera = activeCameraID
         activeCameraID = cameraID
         stopRetryCount = 0
         leaseTask?.cancel()
 
         let operation = enqueue { [apiClient] in
-            if let previousCamera = previousCamera, previousCamera != cameraID {
-                try await apiClient.ptzStop(cameraID: previousCamera)
-            }
             try await apiClient.ptzMove(cameraID: cameraID, x: x, y: y, z: z)
         }
         let succeeded = await operation.value
@@ -52,14 +52,15 @@ actor PTZController {
         }
     }
 
-    func stop(cameraID: String? = nil) async {
+    @discardableResult
+    func stop(cameraID: String? = nil) async -> Bool {
         generation &+= 1
         let commandGeneration = generation
         leaseTask?.cancel()
         leaseTask = nil
 
         let target = cameraID ?? activeCameraID
-        guard let target = target else { return }
+        guard let target = target else { return true }
         let operation = enqueue { [apiClient] in
             try await apiClient.ptzStop(cameraID: target)
         }
@@ -68,8 +69,10 @@ actor PTZController {
         if succeeded {
             if target == activeCameraID { activeCameraID = nil }
             stopRetryCount = 0
+            return true
         } else {
             await scheduleStopRetry(cameraID: target)
+            return false
         }
     }
 
