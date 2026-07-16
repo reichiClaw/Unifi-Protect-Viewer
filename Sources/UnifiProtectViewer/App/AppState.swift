@@ -233,15 +233,27 @@ final class AppState: ObservableObject {
     }
 
     func updateConnection(_ connection: ConnectionSettings, password: String?) {
+        let previous = config.connection
         config.connection = connection
-        if let password = password {
-            ConfigStore.shared.setPassword(password, for: connection.username)
+        if let password = password, !password.isEmpty {
+            if ConfigStore.shared.setPassword(password,
+                                              host: connection.host,
+                                              username: connection.username),
+               previous.host != connection.host || previous.username != connection.username {
+                ConfigStore.shared.removePassword(host: previous.host, username: previous.username)
+            }
         }
         saveConfig()
     }
 
     var storedPassword: String? {
-        ConfigStore.shared.password(for: config.connection.username)
+        ConfigStore.shared.password(host: config.connection.host,
+                                    username: config.connection.username)
+    }
+
+    func removeStoredPassword() {
+        ConfigStore.shared.removePassword(host: config.connection.host,
+                                          username: config.connection.username)
     }
 
     // MARK: - Connection lifecycle
@@ -366,7 +378,12 @@ final class AppState: ObservableObject {
         let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else { return }
         let displayName = name.trimmingCharacters(in: .whitespaces)
-        let cam = ManualCamera(name: displayName.isEmpty ? trimmedURL : displayName, url: trimmedURL)
+        var cam = ManualCamera(name: displayName.isEmpty ? trimmedURL : displayName, url: trimmedURL)
+        if !ConfigStore.shared.setManualStreamURL(trimmedURL, id: cam.id) {
+            // Preserve the URL in config only when secure storage is
+            // unavailable, so the user does not silently lose the stream.
+            cam.requiresSecureMigration = true
+        }
         config.manualCameras.append(cam)
         rebuildCameras(prune: false)
         // Show it right away by adding it to the current view.
@@ -381,12 +398,15 @@ final class AppState: ObservableObject {
 
     func updateManualCamera(_ cam: ManualCamera) {
         guard let idx = config.manualCameras.firstIndex(where: { $0.id == cam.id }) else { return }
-        config.manualCameras[idx] = cam
+        var secured = cam
+        secured.requiresSecureMigration = !ConfigStore.shared.setManualStreamURL(cam.url, id: cam.id)
+        config.manualCameras[idx] = secured
         rebuildCameras(prune: false)
         broadcastSnapshot()
     }
 
     func removeManualCamera(id: String) {
+        ConfigStore.shared.removeManualStreamURL(id: id)
         config.manualCameras.removeAll { $0.id == id }
         for index in config.views.indices {
             config.views[index].cameraIDs.removeAll { $0 == id }
@@ -408,9 +428,9 @@ final class AppState: ObservableObject {
             let channels = cam.channels
                 .map { "ch\($0.id)[\($0.width ?? 0)x\($0.height ?? 0) rtsp=\($0.isRtspEnabled ?? false) alias=\($0.rtspAlias ?? "nil")]" }
                 .joined(separator: ", ")
-            let url = streamURL(for: cam, quality: gridQuality(for: currentView))?.absoluteString ?? "nil"
-            let level: AppLog.Level = (url == "nil") ? .warn : .info
-            appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(url) | \(channels)", level)
+            let streamURL = streamURL(for: cam, quality: gridQuality(for: currentView))
+            let level: AppLog.Level = streamURL == nil ? .warn : .info
+            appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(SecretRedaction.url(streamURL)) | \(channels)", level)
         }
     }
 

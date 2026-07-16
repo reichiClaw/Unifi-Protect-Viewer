@@ -397,7 +397,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     private func start(_ e: Entry) {
         let decode = e.hardwareDecoding ? "hardware (VideoToolbox, auto-fallback to software)" : "software"
-        appLog("Player[\(e.id)]: start \(e.activeURL?.absoluteString ?? "") [decode requested: \(decode)]", .debug)
+        appLog("Player[\(e.id)]: start \(SecretRedaction.url(e.activeURL)) [decode requested: \(decode)]", .debug)
         launch(e, stopFirst: false)
     }
 
@@ -604,7 +604,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         guard let fb = comps.url else { return false }
         e.triedFallback = true
         e.activeURL = fb
-        appLog("Player[\(e.id)]: RTSPS failed — falling back to \(fb.absoluteString)", .warn)
+        appLog("Player[\(e.id)]: RTSPS failed — falling back to \(SecretRedaction.url(fb))", .warn)
         launch(e, stopFirst: true)
         return true
     }
@@ -643,7 +643,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         case .buffering, .opening:
             setStatus(e, .buffering)
         case .error:
-            appLog("Player[\(e.id)]: ERROR \(e.activeURL?.absoluteString ?? "")", .error)
+            appLog("Player[\(e.id)]: ERROR \(SecretRedaction.url(e.activeURL))", .error)
             e.announcedPlaying = false
             setStatus(e, .error)
             // checkHealth() will recover after failGrace (respecting backoff).

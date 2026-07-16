@@ -122,7 +122,36 @@ struct CameraGridConfig: Codable, Identifiable, Equatable {
 struct ManualCamera: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var name: String
+    /// Runtime-only. Persisted securely in Keychain; decoded here only to
+    /// migrate configurations written by older versions.
     var url: String
+    var requiresSecureMigration: Bool = false
+
+    init(id: String = UUID().uuidString, name: String, url: String) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.requiresSecureMigration = false
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, url }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        requiresSecureMigration = !url.isEmpty
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        // Preserve legacy data only if Keychain migration failed; remove it
+        // from the next save immediately after secure storage succeeds.
+        if requiresSecureMigration { try c.encode(url, forKey: .url) }
+    }
 }
 
 /// Root persisted document for the app.

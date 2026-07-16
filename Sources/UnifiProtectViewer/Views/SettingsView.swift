@@ -272,6 +272,10 @@ private struct ConnectionSettingsTab: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(host.isEmpty || username.isEmpty)
                     Button("Save") { save() }
+                    Button("Remove Saved Password", role: .destructive) {
+                        appState.removeStoredPassword()
+                        password = ""
+                    }
                     Spacer()
                     statusLabel
                 }

@@ -127,7 +127,7 @@ actor ProtectAPIClient {
 
         guard (200...299).contains(http.statusCode) else {
             let bodyText = (String(data: data, encoding: .utf8) ?? "")
-            appLog("Login failed HTTP \(http.statusCode): \(bodyText)", .error)
+            appLog("Login failed HTTP \(http.statusCode) (response body redacted)", .error)
             let lower = bodyText.lowercased()
             if http.statusCode == 401 || http.statusCode == 499 {
                 if lower.contains("2fa") || lower.contains("mfa") || lower.contains("two") || lower.contains("otp") {
@@ -311,8 +311,7 @@ actor ProtectAPIClient {
             return data
         case 401, 403:
             isAuthenticated = false
-            let bodyText = String(data: data, encoding: .utf8) ?? ""
-            appLog("\(method) \(path) failed HTTP \(http.statusCode): \(bodyText)", .error)
+            appLog("\(method) \(path) failed HTTP \(http.statusCode) (response body redacted)", .error)
             if method != "GET" { throw ProtectAPIError.insufficientPermissions }
             throw ProtectAPIError.authenticationFailed(http.statusCode)
         default:

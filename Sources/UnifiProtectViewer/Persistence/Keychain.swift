@@ -5,18 +5,24 @@ import Security
 enum Keychain {
     private static let service = "com.unifiprotectviewer.app"
 
-    static func set(_ value: String, account: String) {
+    @discardableResult
+    static func set(_ value: String, account: String) -> Bool {
         let data = Data(value.utf8)
-        // Remove any existing item first to keep this idempotent.
-        delete(account: account)
-        let query: [String: Any] = [
+        let lookup: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccount as String: account
         ]
-        SecItemAdd(query as CFDictionary, nil)
+        let update: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let status = SecItemUpdate(lookup as CFDictionary, update as CFDictionary)
+        if status == errSecSuccess { return true }
+        guard status == errSecItemNotFound else { return false }
+        var insert = lookup
+        update.forEach { insert[$0.key] = $0.value }
+        return SecItemAdd(insert as CFDictionary, nil) == errSecSuccess
     }
 
     static func get(account: String) -> String? {
