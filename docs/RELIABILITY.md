@@ -39,13 +39,18 @@ in order:
    pressure than software decoding.
 3. Prefer **fewer very‑high‑res tiles** per view; use **Fullscreen (High)** for
    detail on demand.
+4. Leave **Maximum live grid streams** on **Automatic**. The app uses a
+   RAM-aware decoder budget and pauses lower-priority tiles before the system
+   runs out of memory; set a smaller explicit limit for especially constrained
+   installations.
 
 The app also actively protects itself:
 
 - It frees a stream’s buffers when it scrolls off‑screen and fully evicts
   players that stay off‑screen.
 - It listens for macOS **memory‑pressure** warnings and immediately releases
-  off‑screen players when the system is low on RAM.
+  off‑screen players and lowers the visible-grid decoder budget when the system
+  is low on RAM. Fullscreen remains prioritized.
 - It periodically recreates long‑running decoders to shed any slow drift/leak
   in the video engine over multi‑day uptime.
 

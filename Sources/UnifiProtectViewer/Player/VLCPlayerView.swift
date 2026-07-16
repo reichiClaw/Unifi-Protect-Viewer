@@ -4,7 +4,7 @@ import VLCKitSPM
 
 /// Playback state surfaced to the tile UI.
 enum PlaybackStatus: Equatable {
-    case idle, buffering, playing, error, offline
+    case idle, buffering, playing, error, offline, resourceLimited
 }
 
 /// Observable per-camera status so SwiftUI tiles can show overlays.
@@ -99,6 +99,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         var muted = true
         var online = true
         var hardwareDecoding = true
+        var highPriority = false
+        var resourcePaused = false
         // Watchdog bookkeeping.
         var startedAt = Date()
         /// When the current `VLCMediaPlayer` object was created — used to
@@ -124,6 +126,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// a higher-quality fullscreen twin is covering them — avoids decoding the
     /// same camera twice while fullscreen (a real memory spike on low-RAM Macs).
     private var shadowed: Set<String> = []
+    private var configuredGridLimit = 0
+    private var pressureDivisor = 1
+    private var pressureRecoveryWork: DispatchWorkItem?
     /// Called (on the main thread) when a hosted, online camera's stream has
     /// been failing to play for a while — so the app can check the controller
     /// to distinguish "camera offline" from a transient stream problem.
@@ -171,11 +176,16 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     // MARK: Memory pressure
 
     private func installMemoryPressureMonitor() {
-        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.warning, .critical], queue: .main)
+        let source = DispatchSource.makeMemoryPressureSource(eventMask: [.normal, .warning, .critical], queue: .main)
         source.setEventHandler { [weak self] in
             guard let self = self else { return }
-            let critical = source.data.contains(.critical)
-            self.handleMemoryPressure(critical: critical)
+            if source.data.contains(.critical) {
+                self.handleMemoryPressure(critical: true)
+            } else if source.data.contains(.warning) {
+                self.handleMemoryPressure(critical: false)
+            } else if source.data.contains(.normal) {
+                self.schedulePressureRecovery()
+            }
         }
         source.resume()
         memoryPressureSource = source
@@ -184,13 +194,75 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Free every off-screen player immediately (don't wait for the idle timer),
     /// so the OS reclaims that RAM instead of killing the process.
     private func handleMemoryPressure(critical: Bool) {
+        pressureRecoveryWork?.cancel()
+        pressureRecoveryWork = nil
+        pressureDivisor = critical ? 3 : 2
         let offscreen = entries.values.filter { $0.hostedIn == nil }.map { $0.id }
         for id in offscreen { evict(id) }
+        rebalanceResources()
         let mem = SystemStats.memoryFootprintMB()
         appLog(String(format: "Memory pressure %@ — evicted %d off-screen stream(s) to free RAM (footprint %.0fMB)",
                       critical ? "CRITICAL" : "warning", offscreen.count, mem),
                critical ? .error : .warn)
         onMemoryPressure?(critical)
+    }
+
+    private func schedulePressureRecovery() {
+        pressureRecoveryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self else { return }
+            self.pressureDivisor = 1
+            self.rebalanceResources()
+            appLog("Memory pressure returned to normal — resuming grid streams gradually", .info)
+        }
+        pressureRecoveryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30, execute: work)
+    }
+
+    private var automaticGridLimit: Int {
+        let bytes = ProcessInfo.processInfo.physicalMemory
+        if bytes <= 9 * 1_024 * 1_024 * 1_024 { return 9 }
+        if bytes <= 17 * 1_024 * 1_024 * 1_024 { return 16 }
+        return 25
+    }
+
+    private var effectiveGridLimit: Int {
+        max(2, (configuredGridLimit > 0 ? configuredGridLimit : automaticGridLimit) / pressureDivisor)
+    }
+
+    /// Bound visible grid decoders while always preserving fullscreen/high
+    /// priority streams. Existing healthy players win ties to avoid churn.
+    private func rebalanceResources() {
+        let candidates = entries.values
+            .filter { $0.hostedIn != nil && $0.online && !$0.highPriority && !shadowed.contains($0.id) }
+            .sorted {
+                let lhsPlaying = $0.player.state == .playing || $0.player.state == .esAdded
+                let rhsPlaying = $1.player.state == .playing || $1.player.state == .esAdded
+                if lhsPlaying != rhsPlaying { return lhsPlaying && !rhsPlaying }
+                return $0.id < $1.id
+            }
+        let allowed = Set(candidates.prefix(effectiveGridLimit).map(\.id))
+
+        for e in entries.values where e.hostedIn != nil && e.online {
+            let shouldPause = !e.highPriority && !shadowed.contains(e.id) && !allowed.contains(e.id)
+            if shouldPause && !e.resourcePaused {
+                e.resourcePaused = true
+                invalidateLaunch(e)
+                let player = e.player
+                e.controlQueue.async {
+                    player.stop()
+                    player.media = nil
+                }
+                setStatus(e, .resourceLimited)
+                appLog("Player[\(e.id)]: paused by decoder budget (\(effectiveGridLimit) grid streams)", .warn)
+            } else if !shouldPause && e.resourcePaused {
+                e.resourcePaused = false
+                if e.activeURL != nil && !shadowed.contains(e.id) {
+                    resetHealth(e)
+                    start(e)
+                }
+            }
+        }
     }
 
     // MARK: Public API (main thread)
@@ -199,13 +271,25 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         entry(for: id).status
     }
 
-    func attach(cameraID id: String, to host: NSView, url: URL, caching: Int, muted: Bool, online: Bool, hardwareDecoding: Bool) {
+    func attach(cameraID id: String,
+                to host: NSView,
+                url: URL,
+                caching: Int,
+                muted: Bool,
+                online: Bool,
+                hardwareDecoding: Bool,
+                highPriority: Bool,
+                gridStreamLimit: Int) {
         let e = entry(for: id)
         e.stopWork?.cancel(); e.stopWork = nil
         e.idleSince = nil
         e.caching = caching
         e.muted = muted
         e.hardwareDecoding = hardwareDecoding
+        e.highPriority = highPriority || id.hasSuffix("#fs")
+        if !id.hasSuffix("#fs") {
+            configuredGridLimit = max(0, gridStreamLimit)
+        }
 
         if e.surface.superview !== host {
             e.surface.removeFromSuperview()
@@ -231,11 +315,18 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                     player.media = nil
                 }
             }
+            rebalanceResources()
             return
         }
 
         let cameBackOnline = !e.online
         e.online = true
+        let urlChanged = e.requestedURL != url
+        if urlChanged || cameBackOnline {
+            e.requestedURL = url
+            e.activeURL = url
+            e.triedFallback = false
+        }
 
         // Suppressed while a fullscreen high-quality twin covers this camera:
         // keep the surface parented but don't run the grid-quality decoder.
@@ -246,10 +337,13 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             return
         }
 
-        if e.requestedURL != url || cameBackOnline {
-            e.requestedURL = url
-            e.activeURL = url
-            e.triedFallback = false
+        rebalanceResources()
+        if e.resourcePaused {
+            setStatus(e, .resourceLimited)
+            return
+        }
+
+        if urlChanged || cameBackOnline {
             resetHealth(e)
             start(e)
         } else {
@@ -267,6 +361,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         guard let e = entries[id], e.hostedIn === host else { return }
         e.surface.removeFromSuperview()
         e.hostedIn = nil
+        rebalanceResources()
         e.stopWork?.cancel()
         let work = DispatchWorkItem { [weak self, weak e] in
             guard let self = self, let e = e, e.hostedIn == nil else { return }
@@ -291,6 +386,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         e.surface.removeFromSuperview()
         e.hostedIn = nil
         evict(id)
+        rebalanceResources()
     }
 
     /// Suppress (or resume) a camera's grid-quality decode while a fullscreen
@@ -308,6 +404,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                 }
                 appLog("Player[\(id)]: grid decode suspended (covered by fullscreen HQ stream)", .debug)
             }
+            rebalanceResources()
         } else {
             guard shadowed.remove(id) != nil else { return }
             // Resume grid-quality playback if the tile is still on screen.
@@ -316,13 +413,18 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                 start(e)
                 appLog("Player[\(id)]: grid decode resumed", .debug)
             }
+            rebalanceResources()
         }
     }
 
     /// Counts of currently on-screen players by state (for diagnostics).
     func playbackSummary() -> String {
-        var playing = 0, buffering = 0, opening = 0, error = 0, other = 0
+        var playing = 0, buffering = 0, opening = 0, error = 0, pausedByBudget = 0, other = 0
         for e in entries.values where e.hostedIn != nil {
+            if e.resourcePaused {
+                pausedByBudget += 1
+                continue
+            }
             switch e.player.state {
             case .playing, .esAdded: playing += 1
             case .buffering: buffering += 1
@@ -331,7 +433,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             default: other += 1
             }
         }
-        return "streams on-screen: playing=\(playing) buffering=\(buffering) opening=\(opening) error=\(error) other=\(other)"
+        return "streams on-screen: playing=\(playing) buffering=\(buffering) opening=\(opening) error=\(error) resource-paused=\(pausedByBudget) other=\(other)"
     }
 
     // MARK: Internals
@@ -431,6 +533,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                   e.player === expectedPlayer,
                   e.hostedIn != nil,
                   e.online,
+                  !e.resourcePaused,
                   !e.isRecreating,
                   !self.shadowed.contains(e.id),
                   e.activeURL == url else { return }
@@ -527,7 +630,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
-        for e in entries.values where e.hostedIn != nil && e.online && !e.isRecreating && !shadowed.contains(e.id) {
+        for e in entries.values where e.hostedIn != nil && e.online && !e.resourcePaused && !e.isRecreating && !shadowed.contains(e.id) {
             switch e.player.state {
             case .playing, .esAdded:
                 e.lastHealthyAt = now
@@ -628,6 +731,10 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private func handleState(_ e: Entry) {
+        if e.resourcePaused {
+            setStatus(e, .resourceLimited)
+            return
+        }
         switch e.player.state {
         case .playing, .esAdded:
             e.recoveryAttempts = 0
@@ -665,15 +772,21 @@ struct CameraVideoView: NSViewRepresentable {
     var muted: Bool = true
     var online: Bool = true
     var hardwareDecoding: Bool = true
+    var highPriority: Bool = false
+    var gridStreamLimit: Int = 0
 
     func makeNSView(context: Context) -> HostView {
         let host = HostView()
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online,
+                       hardwareDecoding: hardwareDecoding, highPriority: highPriority,
+                       gridStreamLimit: gridStreamLimit)
         return host
     }
 
     func updateNSView(_ host: HostView, context: Context) {
-        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
+        host.configure(cameraID: cameraID, url: url, caching: caching, muted: muted, online: online,
+                       hardwareDecoding: hardwareDecoding, highPriority: highPriority,
+                       gridStreamLimit: gridStreamLimit)
     }
 
     static func dismantleNSView(_ host: HostView, coordinator: Void) {
@@ -689,6 +802,8 @@ final class HostView: NSView {
     private var muted = true
     private var online = true
     private var hardwareDecoding = true
+    private var highPriority = false
+    private var gridStreamLimit = 0
 
     init() {
         super.init(frame: .zero)
@@ -703,7 +818,8 @@ final class HostView: NSView {
     // tile or the fullscreen video is reliably received).
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool, hardwareDecoding: Bool) {
+    func configure(cameraID: String, url: URL, caching: Int, muted: Bool, online: Bool,
+                   hardwareDecoding: Bool, highPriority: Bool, gridStreamLimit: Int) {
         if self.cameraID != cameraID, !self.cameraID.isEmpty {
             CameraPlayerManager.shared.detach(cameraID: self.cameraID, from: self)
         }
@@ -713,6 +829,8 @@ final class HostView: NSView {
         self.muted = muted
         self.online = online
         self.hardwareDecoding = hardwareDecoding
+        self.highPriority = highPriority
+        self.gridStreamLimit = gridStreamLimit
         if window != nil { attachIfPossible() }
     }
 
@@ -727,6 +845,10 @@ final class HostView: NSView {
 
     private func attachIfPossible() {
         guard let url = url, !cameraID.isEmpty else { return }
-        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching, muted: muted, online: online, hardwareDecoding: hardwareDecoding)
+        CameraPlayerManager.shared.attach(cameraID: cameraID, to: self, url: url, caching: caching,
+                                          muted: muted, online: online,
+                                          hardwareDecoding: hardwareDecoding,
+                                          highPriority: highPriority,
+                                          gridStreamLimit: gridStreamLimit)
     }
 }

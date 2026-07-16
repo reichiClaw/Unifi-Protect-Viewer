@@ -30,6 +30,8 @@ struct ConnectionSettings: Codable, Equatable {
     /// lower memory pressure on low-RAM machines. Turn off only if a stream
     /// shows decode artifacts.
     var hardwareDecoding: Bool = true
+    /// Maximum simultaneous grid decoders. Zero chooses a RAM-aware default.
+    var maxActiveGridStreams: Int = 0
 
     init() {}
 
@@ -48,6 +50,7 @@ struct ConnectionSettings: Codable, Equatable {
         autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
         streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
         hardwareDecoding = try c.decodeIfPresent(Bool.self, forKey: .hardwareDecoding) ?? true
+        maxActiveGridStreams = try c.decodeIfPresent(Int.self, forKey: .maxActiveGridStreams) ?? 0
     }
 
     var isComplete: Bool {

@@ -214,6 +214,7 @@ private struct ConnectionSettingsTab: View {
     @State private var mfaCode: String = ""
     @State private var cacheMs: Double = 1500
     @State private var hardwareDecoding: Bool = true
+    @State private var maxActiveGridStreams: Int = 0
 
     var body: some View {
         Form {
@@ -241,6 +242,12 @@ private struct ConnectionSettingsTab: View {
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
                 Toggle("Auto-enable RTSP on cameras", isOn: $autoEnableRTSP)
                 Toggle("Hardware decoding (VideoToolbox)", isOn: $hardwareDecoding)
+                Picker("Maximum live grid streams", selection: $maxActiveGridStreams) {
+                    Text("Automatic (recommended)").tag(0)
+                    ForEach([4, 6, 9, 12, 16, 25], id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
                 VStack(alignment: .leading) {
                     Text("Buffer: \(Int(cacheMs)) ms")
                     Slider(value: $cacheMs, in: 300...5000, step: 100)
@@ -309,6 +316,7 @@ private struct ConnectionSettingsTab: View {
         fullscreenQuality = c.fullscreenQuality
         cacheMs = Double(c.streamCacheMs)
         hardwareDecoding = c.hardwareDecoding
+        maxActiveGridStreams = c.maxActiveGridStreams
         password = appState.storedPassword ?? ""
     }
 
@@ -324,6 +332,7 @@ private struct ConnectionSettingsTab: View {
         c.defaultQuality = gridQuality // keep legacy field in sync
         c.streamCacheMs = Int(cacheMs)
         c.hardwareDecoding = hardwareDecoding
+        c.maxActiveGridStreams = maxActiveGridStreams
         return c
     }
 

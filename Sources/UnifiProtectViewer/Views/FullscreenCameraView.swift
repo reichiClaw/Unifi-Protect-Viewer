@@ -20,7 +20,8 @@ struct FullscreenCameraView: View {
             // Instant layer: reuse the already-playing grid stream (just gets
             // reparented here → no delay). Shows overlays (offline/buffering).
             // A click here returns to the grid (if enabled in Settings).
-            CameraTileView(camera: camera, view: appState.currentView, showName: false, isFullscreen: false) {
+            CameraTileView(camera: camera, view: appState.currentView, showName: false,
+                           isFullscreen: false, highPriority: true) {
                 if appState.config.tapFullscreenToExit { appState.exitFullscreen() }
             }
             .id(camera.id)
@@ -68,7 +69,7 @@ struct FullscreenCameraView: View {
         case .playing: return .green
         case .offline: return .red
         case .error: return .orange
-        case .buffering, .idle: return .gray
+        case .buffering, .idle, .resourceLimited: return .gray
         }
     }
 
@@ -78,6 +79,7 @@ struct FullscreenCameraView: View {
         case .offline: return "Offline"
         case .error: return "Reconnecting…"
         case .buffering, .idle: return "Connecting…"
+        case .resourceLimited: return "Paused"
         }
     }
 

@@ -8,6 +8,7 @@ struct CameraTileView: View {
     let view: CameraGridConfig?
     var showName: Bool = true
     var isFullscreen: Bool = false
+    var highPriority: Bool = false
     var onActivate: (() -> Void)? = nil
 
     @EnvironmentObject private var appState: AppState
@@ -18,11 +19,13 @@ struct CameraTileView: View {
          view: CameraGridConfig?,
          showName: Bool = true,
          isFullscreen: Bool = false,
+         highPriority: Bool = false,
          onActivate: (() -> Void)? = nil) {
         self.camera = camera
         self.view = view
         self.showName = showName
         self.isFullscreen = isFullscreen
+        self.highPriority = highPriority
         self.onActivate = onActivate
         _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
     }
@@ -36,7 +39,9 @@ struct CameraTileView: View {
                                 url: url,
                                 caching: appState.config.connection.streamCacheMs,
                                 online: camera.isOnline,
-                                hardwareDecoding: appState.config.connection.hardwareDecoding)
+                                hardwareDecoding: appState.config.connection.hardwareDecoding,
+                                highPriority: highPriority,
+                                gridStreamLimit: appState.config.connection.maxActiveGridStreams)
             } else {
                 noStreamPlaceholder
             }
@@ -71,7 +76,7 @@ struct CameraTileView: View {
         case .playing: return .green
         case .offline: return .red
         case .error: return .orange
-        case .buffering, .idle: return .gray
+        case .buffering, .idle, .resourceLimited: return .gray
         }
     }
 
@@ -124,6 +129,15 @@ struct CameraTileView: View {
             }
         case .playing:
             EmptyView()
+        case .resourceLimited:
+            VStack(spacing: 6) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.secondary)
+                Text("Paused to protect system resources")
+                    .font(.caption2)
+                    .foregroundColor(.white.opacity(0.8))
+            }
         }
     }
 
