@@ -95,7 +95,7 @@ function initUI() {
 	el("refresh").addEventListener("click", () => { loadState(); connectAppWS(); });
 
 	// Reconnect the live feed if the host/port changes.
-	["host", "port"].forEach((id) => {
+	["host", "port", "token"].forEach((id) => {
 		const node = el(id);
 		if (node) node.addEventListener("change", connectAppWS);
 	});

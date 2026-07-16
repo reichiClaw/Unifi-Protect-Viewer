@@ -8,6 +8,8 @@ actor PTZController {
     private var activeCameraID: String?
     private var generation: UInt64 = 0
     private var leaseTask: Task<Void, Never>?
+    private var commandTail: Task<Bool, Never>?
+    private var stopRetryCount = 0
     private let leaseSeconds: TimeInterval = 2
 
     init(apiClient: ProtectAPIClient) {
@@ -22,21 +24,23 @@ actor PTZController {
             return
         }
 
-        // Never leave a previous camera moving when control changes target.
-        if let previous = activeCameraID, previous != cameraID {
-            try? await apiClient.ptzStop(cameraID: previous)
-        }
-
         generation &+= 1
         let commandGeneration = generation
+        let previousCamera = activeCameraID
         activeCameraID = cameraID
+        stopRetryCount = 0
         leaseTask?.cancel()
 
-        do {
+        let operation = enqueue { [apiClient] in
+            if let previousCamera = previousCamera, previousCamera != cameraID {
+                try await apiClient.ptzStop(cameraID: previousCamera)
+            }
             try await apiClient.ptzMove(cameraID: cameraID, x: x, y: y, z: z)
-        } catch {
-            activeCameraID = nil
-            appLog("PTZ move failed: \(error.localizedDescription)", .error)
+        }
+        let succeeded = await operation.value
+        guard generation == commandGeneration else { return }
+        guard succeeded else {
+            await scheduleStopRetry(cameraID: cameraID)
             return
         }
 
@@ -50,16 +54,22 @@ actor PTZController {
 
     func stop(cameraID: String? = nil) async {
         generation &+= 1
+        let commandGeneration = generation
         leaseTask?.cancel()
         leaseTask = nil
 
         let target = cameraID ?? activeCameraID
-        if target == activeCameraID { activeCameraID = nil }
         guard let target = target else { return }
-        do {
+        let operation = enqueue { [apiClient] in
             try await apiClient.ptzStop(cameraID: target)
-        } catch {
-            appLog("PTZ stop failed for \(target): \(error.localizedDescription)", .error)
+        }
+        let succeeded = await operation.value
+        guard generation == commandGeneration else { return }
+        if succeeded {
+            if target == activeCameraID { activeCameraID = nil }
+            stopRetryCount = 0
+        } else {
+            await scheduleStopRetry(cameraID: target)
         }
     }
 
@@ -68,6 +78,40 @@ actor PTZController {
         activeCameraID = nil
         leaseTask = nil
         appLog("PTZ safety lease expired — stopping camera", .warn)
-        try? await apiClient.ptzStop(cameraID: cameraID)
+        let operation = enqueue { [apiClient] in
+            try await apiClient.ptzStop(cameraID: cameraID)
+        }
+        if !(await operation.value) {
+            activeCameraID = cameraID
+            await scheduleStopRetry(cameraID: cameraID)
+        }
+    }
+
+    private func enqueue(_ operation: @escaping @Sendable () async throws -> Void) -> Task<Bool, Never> {
+        let previous = commandTail
+        let task = Task {
+            if let previous = previous { _ = await previous.value }
+            do {
+                try await operation()
+                return true
+            } catch {
+                appLog("PTZ command failed: \(error.localizedDescription)", .error)
+                return false
+            }
+        }
+        commandTail = task
+        return task
+    }
+
+    private func scheduleStopRetry(cameraID: String) async {
+        guard activeCameraID == cameraID, stopRetryCount < 6 else { return }
+        stopRetryCount += 1
+        let delay = min(pow(2.0, Double(stopRetryCount - 1)), 30)
+        leaseTask?.cancel()
+        leaseTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await self?.stop(cameraID: cameraID)
+        }
     }
 }

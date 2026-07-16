@@ -34,6 +34,7 @@ final class AppState: ObservableObject {
     private lazy var ptzController = PTZController(apiClient: apiClient)
     private var connectTask: Task<Void, Never>?
     private var reauthTask: Task<Bool, Never>?
+    private var statusFetchTask: Task<Void, Never>?
     private var connectionGeneration: UInt64 = 0
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
@@ -204,12 +205,6 @@ final class AppState: ObservableObject {
         }
     }
 
-    deinit {
-        statusPollTimer?.invalidate()
-        statsTimer?.invalidate()
-        pathMonitor.cancel()
-    }
-
     private func logStats() {
         guard connectionState == .connected else { return }
         let cpu = SystemStats.cpuUsagePercent()
@@ -256,9 +251,12 @@ final class AppState: ObservableObject {
         guard !isFetchingStatus, networkAvailable, !isSystemSuspended else { return }
         isFetchingStatus = true
         lastStatusFetch = Date()
-        Task { [weak self, apiClient] in
+        statusFetchTask = Task { [weak self, apiClient] in
             guard let self = self else { return }
-            defer { self.isFetchingStatus = false }
+            defer {
+                self.isFetchingStatus = false
+                self.statusFetchTask = nil
+            }
             do {
                 var fetched: [ProtectCamera]
                 do {
@@ -383,14 +381,24 @@ final class AppState: ObservableObject {
         connectionGeneration &+= 1
         let generation = connectionGeneration
         let previous = connectTask
+        let previousReauth = reauthTask
+        let previousStatusFetch = statusFetchTask
         previous?.cancel()
+        previousReauth?.cancel()
+        reauthTask = nil
+        statusFetchTask?.cancel()
+        statusFetchTask = nil
+        isFetchingStatus = false
         appLog("Connecting to \(connection.host) as \(connection.username) (rtsps=\(connection.useRTSPS), grid=\(connection.gridQuality.rawValue), fullscreen=\(connection.fullscreenQuality.rawValue), buffer=\(connection.streamCacheMs)ms)")
 
         connectTask = Task { [weak self, apiClient] in
             // Do not let two tasks reset/use the shared API session at once.
             if let previous = previous { _ = await previous.result }
+            if let previousReauth = previousReauth { _ = await previousReauth.result }
+            if let previousStatusFetch = previousStatusFetch { _ = await previousStatusFetch.result }
             guard let self = self else { return }
             do {
+                await self.ptzController.stop()
                 try Task.checkCancellation()
                 await apiClient.configure(host: connection.host)
                 try Task.checkCancellation()
@@ -418,6 +426,7 @@ final class AppState: ObservableObject {
                 self.statusMessage = "Connected — \(loaded.count) camera\(loaded.count == 1 ? "" : "s")."
                 self.mfaCode = ""
                 self.logCameraStreams(loaded)
+                CameraPlayerManager.shared.restartVisibleStreams()
                 self.broadcastSnapshot()
                 self.connectTask = nil
             } catch is CancellationError {
@@ -439,6 +448,7 @@ final class AppState: ObservableObject {
         connectionGeneration &+= 1
         connectTask?.cancel(); connectTask = nil
         reauthTask?.cancel(); reauthTask = nil
+        statusFetchTask?.cancel(); statusFetchTask = nil
         Task { [apiClient] in await apiClient.clearSession() }
         connectionState = .disconnected
         statusMessage = "Disconnected."

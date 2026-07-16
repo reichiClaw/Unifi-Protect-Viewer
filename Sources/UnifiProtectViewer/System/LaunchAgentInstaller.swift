@@ -86,6 +86,16 @@ enum LaunchAgentInstaller {
         appLog("Auto-restart LaunchAgent removed")
     }
 
+    /// `bootstrap` may initially launch a duplicate while the manually started
+    /// app is still running; that duplicate exits cleanly. Schedule a kickstart
+    /// after this instance quits so launchd becomes the owner immediately.
+    static func scheduleOwnershipRelaunch() throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", "sleep 1; exec /bin/launchctl kickstart \(domain)/\(label)"]
+        try proc.run()
+    }
+
     @discardableResult
     private static func runLaunchctl(_ args: [String]) -> Int32 {
         let proc = Process()

@@ -31,7 +31,10 @@ final class ConfigStore {
         do {
             var config = try decodeConfig(at: configURL)
             if hydrateManualStreams(in: &config) {
-                _ = save(config, preserveCurrentAsBackup: false)
+                if save(config, preserveCurrentAsBackup: false) {
+                    // The previous file may contain plaintext legacy stream URLs.
+                    try? fileManager.removeItem(at: backupURL)
+                }
             }
             return config
         } catch {
@@ -53,8 +56,6 @@ final class ConfigStore {
                 try? fileManager.removeItem(at: backupURL)
                 try fileManager.copyItem(at: configURL, to: backupURL)
                 try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
-            } else if !preserveCurrentAsBackup {
-                try? fileManager.removeItem(at: backupURL)
             }
             try data.write(to: configURL, options: .atomic)
             try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)

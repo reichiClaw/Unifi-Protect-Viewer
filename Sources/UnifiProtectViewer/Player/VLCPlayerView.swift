@@ -129,6 +129,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// same camera twice while fullscreen (a real memory spike on low-RAM Macs).
     private var shadowed: Set<String> = []
     private var configuredGridLimit = 0
+    private var isSuspended = false
     private var memoryPressureDivisor = 1
     private var thermalDivisor = 1
     private var pressureRecoveryWork: DispatchWorkItem?
@@ -305,6 +306,13 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
         e.hostedIn = host
 
+        if isSuspended {
+            e.requestedURL = url
+            e.activeURL = url
+            setStatus(e, .idle)
+            return
+        }
+
         // Camera is offline: don't start/retry — just show the offline state and
         // free any running player. We resume automatically when it comes back.
         if !online {
@@ -379,6 +387,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     func stopAll() {
+        isSuspended = true
         shadowed.removeAll()
         for (_, e) in entries {
             e.stopWork?.cancel(); e.stopWork = nil
@@ -390,6 +399,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// restart only currently hosted, online streams (global staggering still
     /// applies).
     func restartVisibleStreams() {
+        isSuspended = false
         let now = Date()
         for e in entries.values where e.hostedIn != nil && e.online {
             e.recoveryAttempts = 0
@@ -567,6 +577,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                   e.launchGeneration == generation,
                   e.player === expectedPlayer,
                   e.hostedIn != nil,
+                  !self.isSuspended,
                   e.online,
                   !e.resourcePaused,
                   !e.isRecreating,
@@ -663,6 +674,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// Startup gets a much longer deadline than a stream that had played
     /// successfully, preserving anti-thrash behavior under controller load.
     private func checkHealth() {
+        guard !isSuspended else { return }
         let now = Date()
         var budget = maxRecoveriesPerTick
         for e in entries.values where e.hostedIn != nil && e.online && !e.resourcePaused && !e.isRecreating && !shadowed.contains(e.id) {

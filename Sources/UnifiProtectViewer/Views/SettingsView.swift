@@ -71,10 +71,19 @@ private struct ReliabilitySettingsTab: View {
 
     private func setAutoRestart(_ on: Bool) {
         do {
-            if on { try LaunchAgentInstaller.install() }
-            else { try LaunchAgentInstaller.uninstall() }
+            if on {
+                try LaunchAgentInstaller.install()
+                try LaunchAgentInstaller.scheduleOwnershipRelaunch()
+            } else {
+                try LaunchAgentInstaller.uninstall()
+            }
             autoRestart = LaunchAgentInstaller.isInstalled
             agentLoaded = LaunchAgentInstaller.isLoaded
+            if on {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    NSApp.terminate(nil)
+                }
+            }
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             autoRestart = LaunchAgentInstaller.isInstalled

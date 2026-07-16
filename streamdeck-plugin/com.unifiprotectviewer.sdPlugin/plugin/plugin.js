@@ -369,7 +369,7 @@ function identifierForCamera(s) {
 // ---------------------------------------------------------------------------
 // App state WebSocket (keeps titles in sync).
 // ---------------------------------------------------------------------------
-function connKey(s) { return `${s.host}:${s.port}`; }
+function connKey(s) { return `${s.host}:${s.port}:${s.token || ""}`; }
 
 function ensureAppConnection(s) {
 	const key = connKey(s);
