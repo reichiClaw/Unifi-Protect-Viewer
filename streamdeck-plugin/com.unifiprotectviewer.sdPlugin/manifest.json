@@ -4,7 +4,7 @@
 	"Author": "UniFi Protect Viewer",
 	"Name": "UniFi Protect Viewer",
 	"Description": "Switch grid views, pop cameras fullscreen, and control PTZ in the UniFi Protect Viewer macOS app.",
-	"Version": "1.1.0.0",
+	"Version": "1.2.0.0",
 	"URL": "https://github.com/reichiClaw/Unifi-Protect-Viewer",
 	"Icon": "icons/plugin",
 	"Category": "UniFi Protect Viewer",
@@ -15,10 +15,6 @@
 		{
 			"Platform": "mac",
 			"MinimumVersion": "10.15"
-		},
-		{
-			"Platform": "windows",
-			"MinimumVersion": "10"
 		}
 	],
 	"Software": {

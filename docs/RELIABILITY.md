@@ -17,6 +17,11 @@ A normal **Quit** (⌘Q) is respected and will **not** relaunch. If you move or
 rename the app after enabling this, toggle it off and on again so the restart
 points at the new location.
 
+The app prevents duplicate instances and automatically disables the LaunchAgent
+after repeated abnormal launches in a short window, preserving logs instead of
+entering an endless crash loop. Settings shows whether the agent is actually
+loaded in the current GUI session.
+
 You can also install it from the command line (useful for headless setups):
 
 ```bash
@@ -39,22 +44,35 @@ in order:
    pressure than software decoding.
 3. Prefer **fewer very‑high‑res tiles** per view; use **Fullscreen (High)** for
    detail on demand.
+4. Leave **Maximum live grid streams** on **Automatic**. The app uses a
+   RAM-aware decoder budget and pauses lower-priority tiles before the system
+   runs out of memory; set a smaller explicit limit for especially constrained
+   installations.
 
 The app also actively protects itself:
 
 - It frees a stream’s buffers when it scrolls off‑screen and fully evicts
   players that stay off‑screen.
 - It listens for macOS **memory‑pressure** warnings and immediately releases
-  off‑screen players when the system is low on RAM.
+  off‑screen players and lowers the visible-grid decoder budget when the system
+  is low on RAM. Fullscreen remains prioritized.
 - It periodically recreates long‑running decoders to shed any slow drift/leak
   in the video engine over multi‑day uptime.
+- It stops PTZ/playback before sleep, watches network-path changes, and
+  revalidates/restarts visible streams gradually after wake or connectivity
+  restoration.
+- Serious/critical macOS thermal pressure temporarily lowers the active decoder
+  budget so the machine can cool without becoming unresponsive.
 
 ## 3. If it still crashes — get the evidence
 
-The app records CPU, memory, memory‑pressure events and crashes to its own log:
+The app records CPU, memory and memory-pressure events in `app.log`; fatal
+signal/exception output is kept separately in `crash.log` so normal rotation
+cannot erase it:
 
 - **In‑app:** Settings → Reliability → *Reveal log file in Finder* (or the log
-  window). The log rotates automatically so it stays readable over long runs.
+  window). Logs rotate automatically with three retained backups, including
+  across automatic relaunches.
 - **macOS reports:** `~/Library/Logs/DiagnosticReports/`. A `JetsamEvent‑*.ips`
   there means the app was killed for using too much memory (see section 2). A
   regular `.ips`/crash report with a backtrace means an in‑app/engine crash —

@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import Combine
+import AppKit
+import Network
 
 enum ConnectionState: String {
     case disconnected
@@ -13,10 +15,9 @@ enum ConnectionState: String {
 /// the configurable grid views, the current selection/fullscreen state, and the
 /// Stream Deck control server.
 ///
-/// Not annotated `@MainActor`: the control server invokes the
-/// `ControlServerHandler` methods on the main thread synchronously, and async
-/// network work hops back to the main thread explicitly. All `@Published`
-/// mutations happen on the main thread.
+/// Main-actor owned: every published/UI mutation and control-server handler is
+/// serialized on the UI actor; networking remains isolated in API actors.
+@MainActor
 final class AppState: ObservableObject {
     // MARK: Published state
     @Published var config: AppConfiguration
@@ -30,6 +31,11 @@ final class AppState: ObservableObject {
 
     // MARK: Private
     private let apiClient = ProtectAPIClient()
+    private lazy var ptzController = PTZController(apiClient: apiClient)
+    private var connectTask: Task<Void, Never>?
+    private var reauthTask: Task<Bool, Never>?
+    private var statusFetchTask: Task<Void, Never>?
+    private var connectionGeneration: UInt64 = 0
     private var controlServer: ControlServer?
     private var camerasByID: [String: ProtectCamera] = [:]
     /// Last cameras loaded from the UniFi controller (merged with manual ones).
@@ -44,14 +50,18 @@ final class AppState: ObservableObject {
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
     private var lastMemWarning = Date.distantPast
-    /// Safety: auto-stop continuous PTZ movement if a "stop" is never received
-    /// (e.g. a missed button release or a dropped request), so the camera can't
-    /// run away.
-    private var ptzSafetyStop: DispatchWorkItem?
-    private let ptzMaxMoveSeconds: TimeInterval = 4
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "com.unifiprotectviewer.network-path")
+    private var cancellables = Set<AnyCancellable>()
+    private var networkAvailable = true
+    private var isSystemSuspended = false
 
     init() {
         self.config = ConfigStore.shared.load()
+        if let warning = ConfigStore.shared.lastWarning {
+            self.statusMessage = warning
+            appLog(warning, .warn)
+        }
         if config.views.isEmpty {
             // Seed with a single empty "All Cameras" view; populated after connect.
             config.views = [CameraGridConfig(name: "All Cameras", layout: .auto, cameraIDs: [])]
@@ -62,15 +72,17 @@ final class AppState: ObservableObject {
         // When a stream keeps failing, confirm against the controller whether
         // the camera is actually offline (vs a transient stream problem).
         CameraPlayerManager.shared.onPersistentFailure = { [weak self] cameraID in
-            self?.confirmCameraStatus(triggeredBy: cameraID)
+            Task { @MainActor in self?.confirmCameraStatus(triggeredBy: cameraID) }
         }
 
         // Log memory-pressure events with context (which view / how many tiles),
         // so a low-RAM machine's near-jetsam moments are visible in the log.
         CameraPlayerManager.shared.onMemoryPressure = { [weak self] critical in
-            guard let self = self else { return }
-            appLog("Memory pressure (\(critical ? "critical" : "warning")) while showing view \"\(self.currentView?.name ?? "-")\" with \(self.camerasForCurrentView().count) tiles",
-                   critical ? .error : .warn)
+            Task { @MainActor in
+                guard let self = self else { return }
+                appLog("Memory pressure (\(critical ? "critical" : "warning")) while showing view \"\(self.currentView?.name ?? "-")\" with \(self.camerasForCurrentView().count) tiles",
+                       critical ? .error : .warn)
+            }
         }
 
         // Make any user-added custom streams available immediately (even before
@@ -90,17 +102,107 @@ final class AppState: ObservableObject {
         // it coming back), infrequent otherwise. Live health is driven by the
         // stream itself; this poll is for offline confirmation/recovery.
         let timer = Timer(timeInterval: pollTickSeconds, repeats: true) { [weak self] _ in
-            self?.pollCameraStatus()
+            Task { @MainActor in self?.pollCameraStatus() }
         }
         RunLoop.main.add(timer, forMode: .common)
         statusPollTimer = timer
 
         // Periodic diagnostics: CPU / memory / per-stream state.
-        let stats = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
-            self?.logStats()
+        let stats = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.logStats() }
         }
         RunLoop.main.add(stats, forMode: .common)
         statsTimer = stats
+        installSystemLifecycleMonitoring()
+    }
+
+    private func installSystemLifecycleMonitoring() {
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.suspendForSystemTransition("Mac is sleeping") }
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.resumeAfterSystemTransition("Mac woke from sleep") }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.handleThermalChange() }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.suspendForSystemTransition("App terminating") }
+            }
+            .store(in: &cancellables)
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in self?.handleNetworkPath(path.status == .satisfied) }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    private func suspendForSystemTransition(_ reason: String) {
+        guard !isSystemSuspended else { return }
+        isSystemSuspended = true
+        appLog("\(reason) — stopping PTZ and releasing playback")
+        stopPTZ(cameraID: fullscreenCameraID)
+        CameraPlayerManager.shared.stopAll()
+    }
+
+    private func resumeAfterSystemTransition(_ reason: String) {
+        isSystemSuspended = false
+        appLog(reason)
+        guard networkAvailable else {
+            statusMessage = "Waiting for network…"
+            return
+        }
+        recoverAfterConnectivityChange()
+    }
+
+    private func handleNetworkPath(_ available: Bool) {
+        guard available != networkAvailable else { return }
+        networkAvailable = available
+        if !available {
+            appLog("Network unavailable — pausing streams", .warn)
+            statusMessage = "Waiting for network…"
+            stopPTZ(cameraID: fullscreenCameraID)
+            CameraPlayerManager.shared.stopAll()
+        } else if !isSystemSuspended {
+            appLog("Network restored")
+            recoverAfterConnectivityChange()
+        }
+    }
+
+    private func recoverAfterConnectivityChange() {
+        guard connectionState == .connected else { return }
+        statusMessage = "Network restored — reconnecting streams…"
+        CameraPlayerManager.shared.restartVisibleStreams()
+        fetchCameraStatus()
+    }
+
+    private func handleThermalChange() {
+        let state = ProcessInfo.processInfo.thermalState
+        CameraPlayerManager.shared.setThermalPressure(state)
+        switch state {
+        case .serious:
+            appLog("Thermal pressure serious — reducing active decoder budget", .warn)
+        case .critical:
+            appLog("Thermal pressure critical — aggressively reducing active decoder budget", .error)
+        case .nominal:
+            appLog("Thermal pressure returned to nominal")
+        default:
+            break
+        }
     }
 
     private func logStats() {
@@ -126,7 +228,7 @@ final class AppState: ObservableObject {
 
     /// Timer tick; only actually hits the API when needed.
     private func pollCameraStatus() {
-        guard connectionState == .connected else { return }
+        guard connectionState == .connected, networkAvailable, !isSystemSuspended else { return }
         let anyOffline = camerasByID.values.contains { $0.directURL == nil && !$0.isOnline }
         let slowDue = Date().timeIntervalSince(lastStatusFetch) >= slowPollSeconds
         // Poll often while something is offline (to catch recovery), otherwise
@@ -146,24 +248,67 @@ final class AppState: ObservableObject {
     }
 
     private func fetchCameraStatus() {
-        guard !isFetchingStatus else { return }
+        guard !isFetchingStatus, networkAvailable, !isSystemSuspended else { return }
         isFetchingStatus = true
         lastStatusFetch = Date()
-        Task {
+        statusFetchTask = Task { [weak self, apiClient] in
+            guard let self = self else { return }
+            defer {
+                self.isFetchingStatus = false
+                self.statusFetchTask = nil
+            }
             do {
-                let fetched = try await apiClient.fetchCameras()
-                await MainActor.run {
-                    self.isFetchingStatus = false
-                    if !fetched.isEmpty { self.refreshCameraStatus(fetched) }
+                var fetched: [ProtectCamera]
+                do {
+                    fetched = try await apiClient.fetchCameras()
+                } catch {
+                    guard self.isAuthenticationError(error),
+                          await self.reauthenticate() else { throw error }
+                    fetched = try await apiClient.fetchCameras()
                 }
+                if !fetched.isEmpty { self.refreshCameraStatus(fetched) }
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                await MainActor.run {
-                    self.isFetchingStatus = false
-                    appLog("Camera status poll failed: \(message)", .warn)
-                }
+                appLog("Camera status poll failed: \(message)", .warn)
             }
         }
+    }
+
+    private func isAuthenticationError(_ error: Error) -> Bool {
+        guard let apiError = error as? ProtectAPIError else { return false }
+        if case .authenticationFailed = apiError { return true }
+        return false
+    }
+
+    /// Coalesce every session refresh into one login. Callers can retry one
+    /// idempotent operation after this succeeds.
+    private func reauthenticate() async -> Bool {
+        if let existing = reauthTask { return await existing.value }
+        guard connectionState == .connected,
+              let password = storedPassword, !password.isEmpty else { return false }
+        let connection = config.connection
+        let task = Task { [apiClient] () -> Bool in
+            do {
+                await apiClient.clearSession()
+                try await apiClient.login(username: connection.username,
+                                          password: password,
+                                          mfaToken: "")
+                appLog("Controller session renewed")
+                return true
+            } catch {
+                appLog("Controller session renewal failed: \(error.localizedDescription)", .error)
+                return false
+            }
+        }
+        reauthTask = task
+        let result = await task.value
+        reauthTask = nil
+        if !result {
+            connectionState = .error
+            statusMessage = "Controller session expired. Reconnect required."
+            broadcastSnapshot()
+        }
+        return result
     }
 
     /// Update connection/online status (and other fields) of known cameras
@@ -187,19 +332,35 @@ final class AppState: ObservableObject {
     // MARK: - Configuration persistence
 
     func saveConfig() {
-        ConfigStore.shared.save(config)
+        if !ConfigStore.shared.save(config),
+           let warning = ConfigStore.shared.lastWarning {
+            statusMessage = warning
+            appLog(warning, .error)
+        }
     }
 
     func updateConnection(_ connection: ConnectionSettings, password: String?) {
+        let previous = config.connection
         config.connection = connection
-        if let password = password {
-            ConfigStore.shared.setPassword(password, for: connection.username)
+        if let password = password, !password.isEmpty {
+            if ConfigStore.shared.setPassword(password,
+                                              host: connection.host,
+                                              username: connection.username),
+               previous.host != connection.host || previous.username != connection.username {
+                ConfigStore.shared.removePassword(host: previous.host, username: previous.username)
+            }
         }
         saveConfig()
     }
 
     var storedPassword: String? {
-        ConfigStore.shared.password(for: config.connection.username)
+        ConfigStore.shared.password(host: config.connection.host,
+                                    username: config.connection.username)
+    }
+
+    func removeStoredPassword() {
+        ConfigStore.shared.removePassword(host: config.connection.host,
+                                          username: config.connection.username)
     }
 
     // MARK: - Connection lifecycle
@@ -217,14 +378,35 @@ final class AppState: ObservableObject {
         statusMessage = "Connecting to \(config.connection.host)…"
         let connection = config.connection
         let mfa = mfaCode
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
+        let previous = connectTask
+        let previousReauth = reauthTask
+        let previousStatusFetch = statusFetchTask
+        previous?.cancel()
+        previousReauth?.cancel()
+        reauthTask = nil
+        statusFetchTask?.cancel()
+        statusFetchTask = nil
+        isFetchingStatus = false
         appLog("Connecting to \(connection.host) as \(connection.username) (rtsps=\(connection.useRTSPS), grid=\(connection.gridQuality.rawValue), fullscreen=\(connection.fullscreenQuality.rawValue), buffer=\(connection.streamCacheMs)ms)")
 
-        Task {
+        connectTask = Task { [weak self, apiClient] in
+            // Do not let two tasks reset/use the shared API session at once.
+            if let previous = previous { _ = await previous.result }
+            if let previousReauth = previousReauth { _ = await previousReauth.result }
+            if let previousStatusFetch = previousStatusFetch { _ = await previousStatusFetch.result }
+            guard let self = self else { return }
             do {
+                await self.ptzController.stop()
+                try Task.checkCancellation()
                 await apiClient.configure(host: connection.host)
+                try Task.checkCancellation()
                 try await apiClient.login(username: connection.username, password: password, mfaToken: mfa)
+                try Task.checkCancellation()
                 appLog("Login succeeded; fetching bootstrap…")
                 var bootstrap = try await apiClient.fetchBootstrap()
+                try Task.checkCancellation()
 
                 if connection.autoEnableRTSP {
                     let updated = await apiClient.enableRTSPIfNeeded(for: bootstrap.cameras)
@@ -237,27 +419,37 @@ final class AppState: ObservableObject {
                 let loaded = bootstrap.cameras.sorted {
                     $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
                 }
-                await MainActor.run {
-                    self.applyCameras(loaded)
-                    self.connectionState = .connected
-                    self.statusMessage = "Connected — \(loaded.count) camera\(loaded.count == 1 ? "" : "s")."
-                    self.mfaCode = ""
-                    self.logCameraStreams(loaded)
-                    self.broadcastSnapshot()
-                }
+                try Task.checkCancellation()
+                guard generation == self.connectionGeneration else { return }
+                self.applyCameras(loaded)
+                self.connectionState = .connected
+                self.statusMessage = "Connected — \(loaded.count) camera\(loaded.count == 1 ? "" : "s")."
+                self.mfaCode = ""
+                self.logCameraStreams(loaded)
+                CameraPlayerManager.shared.restartVisibleStreams()
+                self.broadcastSnapshot()
+                self.connectTask = nil
+            } catch is CancellationError {
+                return
             } catch {
-                await MainActor.run {
-                    let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    self.connectionState = .error
-                    self.statusMessage = message
-                    appLog("Connection failed: \(message)", .error)
-                    self.broadcastSnapshot()
-                }
+                guard generation == self.connectionGeneration else { return }
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                self.connectionState = .error
+                self.statusMessage = message
+                self.connectTask = nil
+                appLog("Connection failed: \(message)", .error)
+                self.broadcastSnapshot()
             }
         }
     }
 
     func disconnect() {
+        stopPTZ(cameraID: fullscreenCameraID)
+        connectionGeneration &+= 1
+        connectTask?.cancel(); connectTask = nil
+        reauthTask?.cancel(); reauthTask = nil
+        statusFetchTask?.cancel(); statusFetchTask = nil
+        Task { [apiClient] in await apiClient.clearSession() }
         connectionState = .disconnected
         statusMessage = "Disconnected."
         fullscreenCameraID = nil
@@ -305,7 +497,12 @@ final class AppState: ObservableObject {
         let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedURL.isEmpty else { return }
         let displayName = name.trimmingCharacters(in: .whitespaces)
-        let cam = ManualCamera(name: displayName.isEmpty ? trimmedURL : displayName, url: trimmedURL)
+        var cam = ManualCamera(name: displayName.isEmpty ? trimmedURL : displayName, url: trimmedURL)
+        if !ConfigStore.shared.setManualStreamURL(trimmedURL, id: cam.id) {
+            // Preserve the URL in config only when secure storage is
+            // unavailable, so the user does not silently lose the stream.
+            cam.requiresSecureMigration = true
+        }
         config.manualCameras.append(cam)
         rebuildCameras(prune: false)
         // Show it right away by adding it to the current view.
@@ -320,12 +517,15 @@ final class AppState: ObservableObject {
 
     func updateManualCamera(_ cam: ManualCamera) {
         guard let idx = config.manualCameras.firstIndex(where: { $0.id == cam.id }) else { return }
-        config.manualCameras[idx] = cam
+        var secured = cam
+        secured.requiresSecureMigration = !ConfigStore.shared.setManualStreamURL(cam.url, id: cam.id)
+        config.manualCameras[idx] = secured
         rebuildCameras(prune: false)
         broadcastSnapshot()
     }
 
     func removeManualCamera(id: String) {
+        ConfigStore.shared.removeManualStreamURL(id: id)
         config.manualCameras.removeAll { $0.id == id }
         for index in config.views.indices {
             config.views[index].cameraIDs.removeAll { $0 == id }
@@ -347,9 +547,9 @@ final class AppState: ObservableObject {
             let channels = cam.channels
                 .map { "ch\($0.id)[\($0.width ?? 0)x\($0.height ?? 0) rtsp=\($0.isRtspEnabled ?? false) alias=\($0.rtspAlias ?? "nil")]" }
                 .joined(separator: ", ")
-            let url = streamURL(for: cam, quality: gridQuality(for: currentView))?.absoluteString ?? "nil"
-            let level: AppLog.Level = (url == "nil") ? .warn : .info
-            appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(url) | \(channels)", level)
+            let streamURL = streamURL(for: cam, quality: gridQuality(for: currentView))
+            let level: AppLog.Level = streamURL == nil ? .warn : .info
+            appLog("Camera \"\(cam.displayName)\" online=\(cam.isOnline) → \(SecretRedaction.url(streamURL)) | \(channels)", level)
         }
     }
 
@@ -398,6 +598,7 @@ final class AppState: ObservableObject {
 
     func selectView(_ id: UUID) {
         guard config.views.contains(where: { $0.id == id }) else { return }
+        stopPTZ(cameraID: fullscreenCameraID)
         selectedViewID = id
         fullscreenCameraID = nil
         broadcastSnapshot()
@@ -465,11 +666,15 @@ final class AppState: ObservableObject {
 
     func showFullscreen(cameraID: String) {
         guard camerasByID[cameraID] != nil else { return }
+        if let current = fullscreenCameraID, current != cameraID {
+            stopPTZ(cameraID: current)
+        }
         fullscreenCameraID = cameraID
         broadcastSnapshot()
     }
 
     func exitFullscreen() {
+        stopPTZ(cameraID: fullscreenCameraID)
         fullscreenCameraID = nil
         broadcastSnapshot()
     }
@@ -497,36 +702,26 @@ final class AppState: ObservableObject {
     @discardableResult
     func ptzMove(cameraID: String?, dx: Int, dy: Int, dz: Int) -> Bool {
         let cam = cameraID.flatMap { camerasByID[$0] } ?? fullscreenCamera
-        guard let cam = cam else { return false }
+        guard let cam = cam, cam.isPTZ, !cam.isManual else { return false }
         let id = cam.id
         let speed = ProtectAPIClient.ptzMoveSpeed
         let x = dx.signum() * speed
         let y = dy.signum() * speed
         let z = dz.signum() * speed
-        let moving = (x != 0 || y != 0 || z != 0)
-
-        ptzSafetyStop?.cancel(); ptzSafetyStop = nil
-
-        Task { [apiClient] in
-            do {
-                try await apiClient.ptzMove(cameraID: id, x: x, y: y, z: z)
-            } catch {
-                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                appLog("PTZ move failed: \(message)", .error)
-            }
-        }
-
-        if moving {
-            let work = DispatchWorkItem { [weak self] in
-                guard let self = self else { return }
-                self.ptzSafetyStop = nil
-                appLog("PTZ safety auto-stop after \(Int(self.ptzMaxMoveSeconds))s", .warn)
-                Task { [apiClient = self.apiClient] in try? await apiClient.ptzStop(cameraID: id) }
-            }
-            ptzSafetyStop = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + ptzMaxMoveSeconds, execute: work)
+        Task { [weak self] in
+            guard let self = self, await self.ensureAuthenticated() else { return }
+            await self.ptzController.move(cameraID: id, x: x, y: y, z: z)
         }
         return true
+    }
+
+    private func stopPTZ(cameraID: String? = nil) {
+        Task { [ptzController] in await ptzController.stop(cameraID: cameraID) }
+    }
+
+    private func ensureAuthenticated() async -> Bool {
+        if await apiClient.isAuthenticated { return true }
+        return await reauthenticate()
     }
 
     // MARK: - Control server
@@ -539,7 +734,9 @@ final class AppState: ObservableObject {
         if controlServer == nil {
             controlServer = ControlServer(handler: self)
         }
-        controlServer?.start(port: config.control.port, token: config.control.token)
+        controlServer?.start(port: config.control.port,
+                             token: config.control.token,
+                             allowLAN: config.control.allowLAN)
     }
 
     func restartControlServer() {
@@ -639,17 +836,24 @@ extension AppState: ControlServerHandler {
         // buttons control "whatever PTZ camera is on screen" with no per-button
         // configuration.
         let cam = resolveCamera(id: cameraID, index: index, name: name) ?? fullscreenCamera
-        guard let cam = cam else { return false }
+        guard let cam = cam, cam.isPTZ, !cam.isManual else { return false }
+        let allowed = ["home", "goto", "patrol-start", "patrol-stop"]
+        guard allowed.contains(action) else { return false }
+        if action == "goto" || action == "patrol-start" {
+            guard (0...31).contains(slot) else { return false }
+        }
         let id = cam.id
         appLog("PTZ \(action) slot=\(slot) on \"\(cam.displayName)\"")
-        Task {
+        Task { [weak self] in
+            guard let self = self, await self.ensureAuthenticated() else { return }
             do {
-                switch action {
-                case "home": try await apiClient.ptzGoto(cameraID: id, slot: -1)
-                case "goto": try await apiClient.ptzGoto(cameraID: id, slot: slot)
-                case "patrol-start": try await apiClient.ptzPatrolStart(cameraID: id, slot: slot)
-                case "patrol-stop": try await apiClient.ptzPatrolStop(cameraID: id)
-                default: break
+                await self.ptzController.stop(cameraID: id)
+                do {
+                    try await self.executePTZAction(action, cameraID: id, slot: slot)
+                } catch {
+                    guard self.isAuthenticationError(error),
+                          await self.reauthenticate() else { throw error }
+                    try await self.executePTZAction(action, cameraID: id, slot: slot)
                 }
             } catch {
                 let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
@@ -657,5 +861,15 @@ extension AppState: ControlServerHandler {
             }
         }
         return true
+    }
+
+    private func executePTZAction(_ action: String, cameraID: String, slot: Int) async throws {
+        switch action {
+        case "home": try await apiClient.ptzGoto(cameraID: cameraID, slot: -1)
+        case "goto": try await apiClient.ptzGoto(cameraID: cameraID, slot: slot)
+        case "patrol-start": try await apiClient.ptzPatrolStart(cameraID: cameraID, slot: slot)
+        case "patrol-stop": try await apiClient.ptzPatrolStop(cameraID: cameraID)
+        default: return
+        }
     }
 }

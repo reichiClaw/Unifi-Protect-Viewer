@@ -40,6 +40,7 @@ struct ControlResult: Codable {
 ///
 /// The control server always invokes these methods on the main thread (via
 /// `DispatchQueue.main.sync`), so implementations may safely touch UI state.
+@MainActor
 protocol ControlServerHandler: AnyObject {
     func controlSnapshot() -> ControlSnapshot
     func controlSelectView(id: String?, index: Int?, name: String?) -> Bool

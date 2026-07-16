@@ -22,11 +22,15 @@ final class ControlServer {
     private let server = HttpServer()
     private weak var handler: ControlServerHandler?
     private var token: String = ""
-    private(set) var isRunning = false
+    private var isRunning = false
     private var port: UInt16 = 8723
+    private var allowLAN = false
+    private let stateLock = NSLock()
 
     private let socketsLock = NSLock()
     private var sockets: [WebSocketSession] = []
+    private let rateLock = NSLock()
+    private var requestTimes: [String: [Date]] = [:]
     /// Snapshot writes happen here, never on the main thread — a slow or
     /// half-dead Stream Deck client must not be able to block the UI.
     private let broadcastQueue = DispatchQueue(label: "com.unifiprotectviewer.control.broadcast")
@@ -36,31 +40,40 @@ final class ControlServer {
         configureRoutes()
     }
 
-    func start(port: UInt16, token: String) {
-        if isRunning {
+    func start(port: UInt16, token: String, allowLAN: Bool) {
+        if allowLAN && token.isEmpty {
+            appLog("ControlServer: refusing LAN access without an auth token", .error)
+            return
+        }
+        let existing = stateSnapshot()
+        if existing.running {
             // Already running with the same configuration: nothing to do.
-            if port == self.port && token == self.token {
+            if port == existing.port && token == existing.token && allowLAN == existing.allowLAN {
                 return
             }
             // Configuration changed: stop and restart below.
             stop()
         }
+        stateLock.lock()
         self.port = port
         self.token = token
+        self.allowLAN = allowLAN
+        stateLock.unlock()
+        server.listenAddressIPv4 = allowLAN ? "0.0.0.0" : "127.0.0.1"
         do {
             try server.start(port, forceIPv4: true)
-            isRunning = true
-            appLog("ControlServer: listening on port \(port)")
+            stateLock.lock(); isRunning = true; stateLock.unlock()
+            appLog("ControlServer: listening on \(allowLAN ? "LAN" : "127.0.0.1"):\(port) (auth \(token.isEmpty ? "off" : "on"))")
         } catch {
-            isRunning = false
+            stateLock.lock(); isRunning = false; stateLock.unlock()
             appLog("ControlServer: failed to start on port \(port): \(error)", .error)
         }
     }
 
     func stop() {
-        guard isRunning else { return }
+        guard stateSnapshot().running else { return }
         server.stop()
-        isRunning = false
+        stateLock.lock(); isRunning = false; stateLock.unlock()
         socketsLock.lock(); sockets.removeAll(); socketsLock.unlock()
     }
 
@@ -71,7 +84,7 @@ final class ControlServer {
     /// stuck client can otherwise block the writer, and blocking the main thread
     /// would beachball the whole UI.
     func broadcast(snapshot: ControlSnapshot) {
-        guard isRunning else { return }
+        guard stateSnapshot().running else { return }
         guard let text = encodeToString(snapshot) else { return }
         socketsLock.lock()
         let current = sockets
@@ -108,7 +121,7 @@ final class ControlServer {
         server.POST["/api/ptz"] = { [weak self] req in self?.handlePTZ(req) ?? .internalServerError }
         server.POST["/api/ptz-move"] = { [weak self] req in self?.handlePTZMove(req) ?? .internalServerError }
 
-        server["/ws"] = websocket(
+        let websocketHandler = websocket(
             text: { [weak self] session, text in
                 // Allow simple text commands too, e.g. "next-view".
                 self?.handleSocketText(session, text)
@@ -127,18 +140,27 @@ final class ControlServer {
                 self.socketsLock.unlock()
             }
         )
+        // A token-protected server must authenticate the WebSocket upgrade
+        // before registering the client or exposing the initial snapshot.
+        server["/ws"] = { [weak self] request in
+            guard let self = self else { return .internalServerError }
+            guard self.authorize(request) else { return self.unauthorized() }
+            return websocketHandler(request)
+        }
     }
 
     // MARK: - Handlers
 
     private func handleGetState(_ req: HttpRequest) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        guard allowRequest("state", limit: 30, per: 1) else { return tooManyRequests() }
         guard let snapshot = snapshotSync() else { return .internalServerError }
         return jsonResult(ControlResult(ok: true, message: nil, snapshot: snapshot))
     }
 
     private func handleSelectView(_ req: HttpRequest) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        guard allowRequest("view", limit: 20, per: 1) else { return tooManyRequests() }
         let params = parseParams(req)
         let id = params["id"] as? String
         let index = intParam(params["index"])
@@ -152,6 +174,7 @@ final class ControlServer {
 
     private func handleFullscreen(_ req: HttpRequest, toggle: Bool) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        guard allowRequest("fullscreen", limit: 20, per: 1) else { return tooManyRequests() }
         let params = parseParams(req)
         let cameraId = (params["cameraId"] as? String) ?? (params["cameraID"] as? String)
         let index = intParam(params["index"])
@@ -169,6 +192,7 @@ final class ControlServer {
 
     private func handlePTZ(_ req: HttpRequest) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        guard allowRequest("ptz", limit: 20, per: 1) else { return tooManyRequests() }
         let params = parseParams(req)
         let cameraId = (params["cameraId"] as? String) ?? (params["cameraID"] as? String)
         let index = intParam(params["index"])
@@ -184,6 +208,7 @@ final class ControlServer {
 
     private func handlePTZMove(_ req: HttpRequest) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        guard allowRequest("ptz-move", limit: 30, per: 1) else { return tooManyRequests() }
         let params = parseParams(req)
         let cameraId = (params["cameraId"] as? String) ?? (params["cameraID"] as? String)
         let index = intParam(params["index"])
@@ -200,6 +225,10 @@ final class ControlServer {
 
     private func handleSimple(_ req: HttpRequest, _ action: @escaping (ControlServerHandler) -> Void) -> HttpResponse {
         guard authorize(req) else { return unauthorized() }
+        let isReconnect = req.path == "/api/reconnect"
+        guard allowRequest(isReconnect ? "reconnect" : "simple",
+                           limit: isReconnect ? 1 : 20,
+                           per: isReconnect ? 5 : 1) else { return tooManyRequests() }
         DispatchQueue.main.sync { [weak self] in
             guard let handler = self?.handler else { return }
             action(handler)
@@ -215,6 +244,7 @@ final class ControlServer {
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             command = (obj["command"] as? String) ?? ""
             providedToken = obj["token"] as? String
+            guard tokenMatches(providedToken) else { return }
             if command == "select-view" {
                 let id = obj["id"] as? String
                 let index = intParam(obj["index"])
@@ -236,7 +266,7 @@ final class ControlServer {
                 return
             }
         }
-        if !token.isEmpty && providedToken != token { return }
+        guard tokenMatches(providedToken) else { return }
         switch command {
         case "next-view": DispatchQueue.main.sync { self.handler?.controlNextView() }
         case "prev-view": DispatchQueue.main.sync { self.handler?.controlPreviousView() }
@@ -265,12 +295,47 @@ final class ControlServer {
     }
 
     private func authorize(_ req: HttpRequest) -> Bool {
-        guard !token.isEmpty else { return true }
-        if let header = req.headers["x-auth-token"], header == token { return true }
-        if let q = req.queryParams.first(where: { $0.0 == "token" })?.1, q == token { return true }
+        guard !stateSnapshot().token.isEmpty else { return true }
+        if tokenMatches(req.headers["x-auth-token"]) { return true }
+        if tokenMatches(req.queryParams.first(where: { $0.0 == "token" })?.1) { return true }
         // Also accept token in JSON body.
-        if let obj = bodyJSON(req), (obj["token"] as? String) == token { return true }
+        if let obj = bodyJSON(req), tokenMatches(obj["token"] as? String) { return true }
         return false
+    }
+
+    /// Compare secrets without an early-out on the first differing byte.
+    private func tokenMatches(_ candidate: String?) -> Bool {
+        let expected = stateSnapshot().token
+        if expected.isEmpty { return true }
+        guard let candidate = candidate else { return false }
+        let a = Array(expected.utf8)
+        let b = Array(candidate.utf8)
+        var difference = UInt8(truncatingIfNeeded: a.count ^ b.count)
+        for index in 0..<max(a.count, b.count) {
+            difference |= (index < a.count ? a[index] : 0) ^ (index < b.count ? b[index] : 0)
+        }
+        return difference == 0
+    }
+
+    private func stateSnapshot() -> (running: Bool, port: UInt16, token: String, allowLAN: Bool) {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return (isRunning, port, token, allowLAN)
+    }
+
+    /// Small global token bucket per operation. This is intentionally simple:
+    /// the server normally binds only to loopback, and LAN mode requires auth.
+    private func allowRequest(_ key: String, limit: Int, per seconds: TimeInterval) -> Bool {
+        let now = Date()
+        rateLock.lock()
+        defer { rateLock.unlock() }
+        let recent = (requestTimes[key] ?? []).filter { now.timeIntervalSince($0) < seconds }
+        guard recent.count < limit else {
+            requestTimes[key] = recent
+            return false
+        }
+        requestTimes[key] = recent + [now]
+        return true
     }
 
     private func parseParams(_ req: HttpRequest) -> [String: Any] {
@@ -316,10 +381,20 @@ final class ControlServer {
         }
     }
 
+    private func tooManyRequests() -> HttpResponse {
+        var headers = ControlServer.corsHeaders
+        headers["Content-Type"] = "application/json"
+        headers["Retry-After"] = "1"
+        return .raw(429, "Too Many Requests", headers) { writer in
+            try writer.write(Data("{\"ok\":false,\"message\":\"Too many requests\"}".utf8))
+        }
+    }
+
     /// CORS headers so the Stream Deck plugin's webview `fetch()` calls are
     /// allowed (they're cross-origin from the plugin's point of view).
     static let corsHeaders: [String: String] = [
-        "Access-Control-Allow-Origin": "*",
+        // Stream Deck property inspectors run from an opaque local-file origin.
+        "Access-Control-Allow-Origin": "null",
         "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Auth-Token",
         "Access-Control-Max-Age": "86400"

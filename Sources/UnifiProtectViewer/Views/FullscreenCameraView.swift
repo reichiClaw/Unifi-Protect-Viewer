@@ -6,11 +6,13 @@ struct FullscreenCameraView: View {
     let camera: ProtectCamera
     @EnvironmentObject private var appState: AppState
     @ObservedObject private var status: CameraPlaybackStatus
+    @ObservedObject private var highStatus: CameraPlaybackStatus
     @State private var showControls = true
 
     init(camera: ProtectCamera) {
         self.camera = camera
         _status = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id))
+        _highStatus = ObservedObject(initialValue: CameraPlayerManager.shared.status(for: camera.id + "#fs"))
     }
 
     var body: some View {
@@ -18,7 +20,8 @@ struct FullscreenCameraView: View {
             // Instant layer: reuse the already-playing grid stream (just gets
             // reparented here → no delay). Shows overlays (offline/buffering).
             // A click here returns to the grid (if enabled in Settings).
-            CameraTileView(camera: camera, view: appState.currentView, showName: false, isFullscreen: false) {
+            CameraTileView(camera: camera, view: appState.currentView, showName: false,
+                           isFullscreen: false, highPriority: true) {
                 if appState.config.tapFullscreenToExit { appState.exitFullscreen() }
             }
             .id(camera.id)
@@ -62,21 +65,26 @@ struct FullscreenCameraView: View {
     }
 
     private var statusColor: Color {
-        switch status.state {
+        switch displayedStatus {
         case .playing: return .green
         case .offline: return .red
         case .error: return .orange
-        case .buffering, .idle: return .gray
+        case .buffering, .idle, .resourceLimited: return .gray
         }
     }
 
     private var statusText: String {
-        switch status.state {
+        switch displayedStatus {
         case .playing: return "Live"
         case .offline: return "Offline"
         case .error: return "Reconnecting…"
         case .buffering, .idle: return "Connecting…"
+        case .resourceLimited: return "Paused"
         }
+    }
+
+    private var displayedStatus: PlaybackStatus {
+        needsUpgrade && highStatus.state == .playing ? highStatus.state : status.state
     }
 
     private var gridURL: URL? {
@@ -245,6 +253,7 @@ private struct PTZHoldButton: View {
     let onPress: () -> Void
     let onRelease: () -> Void
     @State private var pressing = false
+    @State private var heartbeat: Task<Void, Never>?
 
     var body: some View {
         Image(systemName: system)
@@ -256,13 +265,39 @@ private struct PTZHoldButton: View {
             .gesture(
                 DragGesture(minimumDistance: 0)
                     .onChanged { _ in
-                        if !pressing { pressing = true; onPress() }
+                        if !pressing { beginPress() }
                     }
                     .onEnded { _ in
-                        pressing = false; onRelease()
+                        endPress()
                     }
             )
             .help(help)
+            .onDisappear {
+                if pressing { endPress() }
+                heartbeat?.cancel()
+            }
+    }
+
+    private func beginPress() {
+        pressing = true
+        onPress()
+        heartbeat?.cancel()
+        heartbeat = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 750_000_000)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    if pressing { onPress() }
+                }
+            }
+        }
+    }
+
+    private func endPress() {
+        heartbeat?.cancel()
+        heartbeat = nil
+        pressing = false
+        onRelease()
     }
 }
 
@@ -301,6 +336,7 @@ private struct UpgradeVideoLayer: View {
             }
             .onDisappear {
                 CameraPlayerManager.shared.setShadowed(cameraID: shadowCameraID, false)
+                CameraPlayerManager.shared.release(cameraID: streamKey)
             }
     }
 }

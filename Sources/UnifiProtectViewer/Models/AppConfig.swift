@@ -30,6 +30,8 @@ struct ConnectionSettings: Codable, Equatable {
     /// lower memory pressure on low-RAM machines. Turn off only if a stream
     /// shows decode artifacts.
     var hardwareDecoding: Bool = true
+    /// Maximum simultaneous grid decoders. Zero chooses a RAM-aware default.
+    var maxActiveGridStreams: Int = 0
 
     init() {}
 
@@ -48,6 +50,7 @@ struct ConnectionSettings: Codable, Equatable {
         autoConnect = try c.decodeIfPresent(Bool.self, forKey: .autoConnect) ?? true
         streamCacheMs = try c.decodeIfPresent(Int.self, forKey: .streamCacheMs) ?? 1500
         hardwareDecoding = try c.decodeIfPresent(Bool.self, forKey: .hardwareDecoding) ?? true
+        maxActiveGridStreams = try c.decodeIfPresent(Int.self, forKey: .maxActiveGridStreams) ?? 0
     }
 
     var isComplete: Bool {
@@ -122,11 +125,41 @@ struct CameraGridConfig: Codable, Identifiable, Equatable {
 struct ManualCamera: Codable, Identifiable, Equatable {
     var id: String = UUID().uuidString
     var name: String
+    /// Runtime-only. Persisted securely in Keychain; decoded here only to
+    /// migrate configurations written by older versions.
     var url: String
+    var requiresSecureMigration: Bool = false
+
+    init(id: String = UUID().uuidString, name: String, url: String) {
+        self.id = id
+        self.name = name
+        self.url = url
+        self.requiresSecureMigration = false
+    }
+
+    enum CodingKeys: String, CodingKey { case id, name, url }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        name = try c.decode(String.self, forKey: .name)
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? ""
+        requiresSecureMigration = !url.isEmpty
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        // Preserve legacy data only if Keychain migration failed; remove it
+        // from the next save immediately after secure storage succeeds.
+        if requiresSecureMigration { try c.encode(url, forKey: .url) }
+    }
 }
 
 /// Root persisted document for the app.
 struct AppConfiguration: Codable {
+    var configVersion: Int = 1
     var connection: ConnectionSettings = ConnectionSettings()
     var views: [CameraGridConfig] = []
     /// Local control server (Stream Deck bridge) settings.
@@ -143,6 +176,7 @@ struct AppConfiguration: Codable {
     /// Resilient decoding so adding fields never invalidates a saved config.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        configVersion = try c.decodeIfPresent(Int.self, forKey: .configVersion) ?? 1
         connection = try c.decodeIfPresent(ConnectionSettings.self, forKey: .connection) ?? ConnectionSettings()
         views = try c.decodeIfPresent([CameraGridConfig].self, forKey: .views) ?? []
         control = try c.decodeIfPresent(ControlServerSettings.self, forKey: .control) ?? ControlServerSettings()
@@ -157,6 +191,24 @@ struct AppConfiguration: Codable {
 struct ControlServerSettings: Codable, Equatable {
     var enabled: Bool = true
     var port: UInt16 = 8723
+    /// Bind to all IPv4 interfaces so another machine can control the viewer.
+    /// Disabled by default: the Stream Deck normally runs on this Mac.
+    var allowLAN: Bool = false
     /// Shared secret required on control requests. Empty = no auth (local only).
     var token: String = ""
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        port = try c.decodeIfPresent(UInt16.self, forKey: .port) ?? 8723
+        allowLAN = try c.decodeIfPresent(Bool.self, forKey: .allowLAN) ?? false
+        token = try c.decodeIfPresent(String.self, forKey: .token) ?? ""
+    }
+
+    static func makeToken() -> String {
+        UUID().uuidString.replacingOccurrences(of: "-", with: "")
+            + UUID().uuidString.replacingOccurrences(of: "-", with: "")
+    }
 }

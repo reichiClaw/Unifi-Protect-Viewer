@@ -22,6 +22,7 @@ struct SettingsView: View {
 
 private struct ReliabilitySettingsTab: View {
     @State private var autoRestart = LaunchAgentInstaller.isInstalled
+    @State private var agentLoaded = LaunchAgentInstaller.isLoaded
     @State private var errorMessage: String?
 
     var body: some View {
@@ -31,6 +32,8 @@ private struct ReliabilitySettingsTab: View {
                     get: { autoRestart },
                     set: { setAutoRestart($0) }
                 ))
+                LabeledContent("LaunchAgent status",
+                               value: agentLoaded ? "Loaded" : (autoRestart ? "Installed but not loaded" : "Disabled"))
             } header: {
                 Text("Auto-restart (recommended for 24/7 walls)")
             } footer: {
@@ -41,6 +44,9 @@ private struct ReliabilitySettingsTab: View {
 
             Section {
                 Button("Reveal log file in Finder") { revealLog() }
+                Button("Reveal crash log in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([AppLog.shared.crashFileURL])
+                }
                 LabeledContent("Log file", value: AppLog.shared.fileURL.path)
                     .font(.caption)
                     .textSelection(.enabled)
@@ -65,12 +71,23 @@ private struct ReliabilitySettingsTab: View {
 
     private func setAutoRestart(_ on: Bool) {
         do {
-            if on { try LaunchAgentInstaller.install() }
-            else { try LaunchAgentInstaller.uninstall() }
+            if on {
+                try LaunchAgentInstaller.install()
+                try LaunchAgentInstaller.scheduleOwnershipRelaunch()
+            } else {
+                try LaunchAgentInstaller.uninstall()
+            }
             autoRestart = LaunchAgentInstaller.isInstalled
+            agentLoaded = LaunchAgentInstaller.isLoaded
+            if on {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    NSApp.terminate(nil)
+                }
+            }
         } catch {
             errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             autoRestart = LaunchAgentInstaller.isInstalled
+            agentLoaded = LaunchAgentInstaller.isLoaded
         }
     }
 
@@ -214,6 +231,7 @@ private struct ConnectionSettingsTab: View {
     @State private var mfaCode: String = ""
     @State private var cacheMs: Double = 1500
     @State private var hardwareDecoding: Bool = true
+    @State private var maxActiveGridStreams: Int = 0
 
     var body: some View {
         Form {
@@ -241,6 +259,12 @@ private struct ConnectionSettingsTab: View {
                 Toggle("Use RTSPS (encrypted, port 7441)", isOn: $useRTSPS)
                 Toggle("Auto-enable RTSP on cameras", isOn: $autoEnableRTSP)
                 Toggle("Hardware decoding (VideoToolbox)", isOn: $hardwareDecoding)
+                Picker("Maximum live grid streams", selection: $maxActiveGridStreams) {
+                    Text("Automatic (recommended)").tag(0)
+                    ForEach([4, 6, 9, 12, 16, 25], id: \.self) { count in
+                        Text("\(count)").tag(count)
+                    }
+                }
                 VStack(alignment: .leading) {
                     Text("Buffer: \(Int(cacheMs)) ms")
                     Slider(value: $cacheMs, in: 300...5000, step: 100)
@@ -272,6 +296,10 @@ private struct ConnectionSettingsTab: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(host.isEmpty || username.isEmpty)
                     Button("Save") { save() }
+                    Button("Remove Saved Password", role: .destructive) {
+                        appState.removeStoredPassword()
+                        password = ""
+                    }
                     Spacer()
                     statusLabel
                 }
@@ -305,6 +333,7 @@ private struct ConnectionSettingsTab: View {
         fullscreenQuality = c.fullscreenQuality
         cacheMs = Double(c.streamCacheMs)
         hardwareDecoding = c.hardwareDecoding
+        maxActiveGridStreams = c.maxActiveGridStreams
         password = appState.storedPassword ?? ""
     }
 
@@ -320,6 +349,7 @@ private struct ConnectionSettingsTab: View {
         c.defaultQuality = gridQuality // keep legacy field in sync
         c.streamCacheMs = Int(cacheMs)
         c.hardwareDecoding = hardwareDecoding
+        c.maxActiveGridStreams = maxActiveGridStreams
         return c
     }
 
@@ -342,24 +372,28 @@ private struct ControlSettingsTab: View {
     @State private var enabled: Bool = true
     @State private var port: String = "8723"
     @State private var token: String = ""
+    @State private var allowLAN: Bool = false
 
     var body: some View {
         Form {
             Section {
                 Toggle("Enable control server", isOn: $enabled)
                 TextField("Port", text: $port)
-                TextField("Auth token (optional)", text: $token)
+                Toggle("Allow control from other computers (LAN)", isOn: $allowLAN)
+                SecureField(allowLAN ? "Auth token (required)" : "Auth token (optional)", text: $token)
+                Button("Generate secure token") { token = ControlServerSettings.makeToken() }
             } header: {
-                Text("Local Control Server")
+                Text("Control Server")
             } footer: {
-                Text("The Stream Deck plugin connects to this server to switch views and pop cameras fullscreen. Leave the token blank for an unauthenticated local-only server, or set one and enter the same value in the plugin.")
+                Text("By default the server listens only on this Mac (127.0.0.1). LAN access is opt-in and always requires a token. Enter the same token in every Stream Deck button.")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
 
             Section("Endpoint") {
-                LabeledContent("Base URL", value: "http://127.0.0.1:\(port)")
-                LabeledContent("WebSocket", value: "ws://127.0.0.1:\(port)/ws")
+                LabeledContent("Binding", value: allowLAN ? "All LAN interfaces" : "This Mac only")
+                LabeledContent("Base URL", value: allowLAN ? "http://<this-mac-ip>:\(port)" : "http://127.0.0.1:\(port)")
+                LabeledContent("WebSocket", value: allowLAN ? "ws://<this-mac-ip>:\(port)/ws" : "ws://127.0.0.1:\(port)/ws")
                 LabeledContent("Status", value: appState.config.control.enabled ? "Running" : "Stopped")
             }
 
@@ -380,12 +414,17 @@ private struct ControlSettingsTab: View {
         enabled = appState.config.control.enabled
         port = String(appState.config.control.port)
         token = appState.config.control.token
+        allowLAN = appState.config.control.allowLAN
     }
 
     private func apply() {
         appState.config.control.enabled = enabled
         appState.config.control.port = UInt16(port) ?? 8723
-        appState.config.control.token = token
+        appState.config.control.allowLAN = allowLAN
+        appState.config.control.token = allowLAN && token.isEmpty
+            ? ControlServerSettings.makeToken()
+            : token
+        token = appState.config.control.token
         appState.saveConfig()
         appState.restartControlServer()
     }
