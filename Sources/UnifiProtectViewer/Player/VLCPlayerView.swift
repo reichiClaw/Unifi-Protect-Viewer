@@ -107,6 +107,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         /// periodically recreate it and shed slow libvlc leaks/drift.
         var playerCreatedAt = Date()
         var lastHealthyAt = Date.distantPast
+        var connectingSince: Date?
+        var hasPlayedSuccessfully = false
         var recoveryAttempts = 0
         var nextRecoveryAllowedAt = Date.distantPast
         var announcedPlaying = false
@@ -140,6 +142,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private let watchdogInterval: TimeInterval = 4
     /// How long a stream may stay failed (error/stopped/ended) before recovery.
     private let failGrace: TimeInterval = 6
+    private let startupTimeout: TimeInterval = 90
+    private let rebufferTimeout: TimeInterval = 45
     /// Never recover more than this many streams in a single tick — prevents a
     /// network blip from triggering a thundering herd of simultaneous restarts.
     private let maxRecoveriesPerTick = 3
@@ -326,6 +330,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.requestedURL = url
             e.activeURL = url
             e.triedFallback = false
+            if urlChanged { e.hasPlayedSuccessfully = false }
         }
 
         // Suppressed while a fullscreen high-quality twin covers this camera:
@@ -465,6 +470,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func resetHealth(_ e: Entry) {
         let now = Date()
         e.startedAt = now
+        e.connectingSince = now
         e.recoveryAttempts = 0
         e.nextRecoveryAllowedAt = now
         e.reportedFailure = false
@@ -515,6 +521,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         setStatus(e, .buffering)
         let now = Date()
         e.startedAt = now
+        e.connectingSince = now
         e.announcedPlaying = false
         let caching = e.caching
         let hardwareDecoding = e.hardwareDecoding
@@ -624,9 +631,9 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
 
     // MARK: Watchdog
 
-    /// Recover only genuinely-failed or hung streams. Streams that are still
-    /// opening/buffering are given a long startup grace so we never kill a
-    /// stream that's simply taking a while to connect.
+    /// Recover hard failures and genuinely hung opening/buffering states.
+    /// Startup gets a much longer deadline than a stream that had played
+    /// successfully, preserving anti-thrash behavior under controller load.
     private func checkHealth() {
         let now = Date()
         var budget = maxRecoveriesPerTick
@@ -634,13 +641,21 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             switch e.player.state {
             case .playing, .esAdded:
                 e.lastHealthyAt = now
+                e.connectingSince = nil
+                e.hasPlayedSuccessfully = true
                 e.recoveryAttempts = 0
                 e.nextRecoveryAllowedAt = now
+            case .opening, .buffering:
+                let since = e.connectingSince ?? e.startedAt
+                let timeout = e.hasPlayedSuccessfully ? rebufferTimeout : startupTimeout
+                guard now.timeIntervalSince(since) >= timeout,
+                      now >= e.nextRecoveryAllowedAt,
+                      budget > 0 else { continue }
+                budget -= 1
+                appLog("Player[\(e.id)]: \(e.hasPlayedSuccessfully ? "buffering" : "opening") hung for \(Int(now.timeIntervalSince(since)))s — recovering", .warn)
+                recover(e, now: now)
             case .error, .stopped, .ended:
-                // Hard failure — recover (with backoff). We deliberately do NOT
-                // recover `opening`/`buffering`: those mean the stream is still
-                // working on it, and restarting mid-connect just adds load and
-                // prevents it from ever stabilizing (a death spiral under load).
+                // Hard failure — recover with the same global budget/backoff.
                 let reference = max(e.lastHealthyAt, e.startedAt)
                 guard now.timeIntervalSince(reference) >= failGrace,
                       now >= e.nextRecoveryAllowedAt,
@@ -648,7 +663,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
                 budget -= 1
                 recover(e, now: now)
             default:
-                break // opening / buffering / paused — leave it alone
+                break // paused / idle
             }
         }
 
@@ -737,6 +752,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         }
         switch e.player.state {
         case .playing, .esAdded:
+            e.hasPlayedSuccessfully = true
+            e.connectingSince = nil
             e.recoveryAttempts = 0
             e.nextRecoveryAllowedAt = Date()
             e.lastHealthyAt = Date()
@@ -748,6 +765,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             }
             setStatus(e, .playing)
         case .buffering, .opening:
+            if e.connectingSince == nil { e.connectingSince = Date() }
             setStatus(e, .buffering)
         case .error:
             appLog("Player[\(e.id)]: ERROR \(SecretRedaction.url(e.activeURL))", .error)
