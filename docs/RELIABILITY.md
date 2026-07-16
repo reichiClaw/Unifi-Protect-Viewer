@@ -53,6 +53,11 @@ The app also actively protects itself:
   is low on RAM. Fullscreen remains prioritized.
 - It periodically recreates long‑running decoders to shed any slow drift/leak
   in the video engine over multi‑day uptime.
+- It stops PTZ/playback before sleep, watches network-path changes, and
+  revalidates/restarts visible streams gradually after wake or connectivity
+  restoration.
+- Serious/critical macOS thermal pressure temporarily lowers the active decoder
+  budget so the machine can cool without becoming unresponsive.
 
 ## 3. If it still crashes — get the evidence
 

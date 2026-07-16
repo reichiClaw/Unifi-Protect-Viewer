@@ -46,7 +46,7 @@ final class AppLog: ObservableObject {
     private let maxEntries = 5000
     private let formatter: DateFormatter
     /// Rotate the on-disk log once it grows past this, so a multi-day 24/7
-    /// session stays readable and bounded (one backup is kept as `app.log.1`).
+    /// session stays readable and bounded (multiple backups are retained).
     private let maxFileBytes = 5_000_000
     private let maxBackups = 3
     private var writeCount = 0  // only touched on `queue`

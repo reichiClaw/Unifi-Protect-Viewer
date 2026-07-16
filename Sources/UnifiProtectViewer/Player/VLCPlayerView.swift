@@ -129,7 +129,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     /// same camera twice while fullscreen (a real memory spike on low-RAM Macs).
     private var shadowed: Set<String> = []
     private var configuredGridLimit = 0
-    private var pressureDivisor = 1
+    private var memoryPressureDivisor = 1
+    private var thermalDivisor = 1
     private var pressureRecoveryWork: DispatchWorkItem?
     /// Called (on the main thread) when a hosted, online camera's stream has
     /// been failing to play for a while — so the app can check the controller
@@ -200,7 +201,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     private func handleMemoryPressure(critical: Bool) {
         pressureRecoveryWork?.cancel()
         pressureRecoveryWork = nil
-        pressureDivisor = critical ? 3 : 2
+        memoryPressureDivisor = critical ? 3 : 2
         let offscreen = entries.values.filter { $0.hostedIn == nil }.map { $0.id }
         for id in offscreen { evict(id) }
         rebalanceResources()
@@ -215,7 +216,7 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
         pressureRecoveryWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
             guard let self = self else { return }
-            self.pressureDivisor = 1
+            self.memoryPressureDivisor = 1
             self.rebalanceResources()
             appLog("Memory pressure returned to normal — resuming grid streams gradually", .info)
         }
@@ -231,7 +232,8 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
     }
 
     private var effectiveGridLimit: Int {
-        max(2, (configuredGridLimit > 0 ? configuredGridLimit : automaticGridLimit) / pressureDivisor)
+        max(2, (configuredGridLimit > 0 ? configuredGridLimit : automaticGridLimit)
+            / max(memoryPressureDivisor, thermalDivisor))
     }
 
     /// Bound visible grid decoders while always preserving fullscreen/high
@@ -382,6 +384,32 @@ final class CameraPlayerManager: NSObject, VLCMediaPlayerDelegate {
             e.stopWork?.cancel(); e.stopWork = nil
             stop(e)
         }
+    }
+
+    /// Reset stale recovery/backoff state after wake or network restoration and
+    /// restart only currently hosted, online streams (global staggering still
+    /// applies).
+    func restartVisibleStreams() {
+        let now = Date()
+        for e in entries.values where e.hostedIn != nil && e.online {
+            e.recoveryAttempts = 0
+            e.nextRecoveryAllowedAt = now
+            e.reportedFailure = false
+            if !e.resourcePaused {
+                resetHealth(e)
+                start(e)
+            }
+        }
+        rebalanceResources()
+    }
+
+    func setThermalPressure(_ state: ProcessInfo.ThermalState) {
+        switch state {
+        case .serious: thermalDivisor = 2
+        case .critical: thermalDivisor = 3
+        default: thermalDivisor = 1
+        }
+        rebalanceResources()
     }
 
     /// Immediately release a short-lived stream (used for fullscreen HQ

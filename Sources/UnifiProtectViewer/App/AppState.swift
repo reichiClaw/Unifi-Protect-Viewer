@@ -1,6 +1,8 @@
 import Foundation
 import SwiftUI
 import Combine
+import AppKit
+import Network
 
 enum ConnectionState: String {
     case disconnected
@@ -47,6 +49,11 @@ final class AppState: ObservableObject {
     private var lastOnDemandCheck = Date.distantPast
     private var isFetchingStatus = false
     private var lastMemWarning = Date.distantPast
+    private let pathMonitor = NWPathMonitor()
+    private let pathMonitorQueue = DispatchQueue(label: "com.unifiprotectviewer.network-path")
+    private var cancellables = Set<AnyCancellable>()
+    private var networkAvailable = true
+    private var isSystemSuspended = false
 
     init() {
         self.config = ConfigStore.shared.load()
@@ -105,6 +112,102 @@ final class AppState: ObservableObject {
         }
         RunLoop.main.add(stats, forMode: .common)
         statsTimer = stats
+        installSystemLifecycleMonitoring()
+    }
+
+    private func installSystemLifecycleMonitoring() {
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.suspendForSystemTransition("Mac is sleeping") }
+            }
+            .store(in: &cancellables)
+
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.resumeAfterSystemTransition("Mac woke from sleep") }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: ProcessInfo.thermalStateDidChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.handleThermalChange() }
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor in self?.suspendForSystemTransition("App terminating") }
+            }
+            .store(in: &cancellables)
+
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in self?.handleNetworkPath(path.status == .satisfied) }
+        }
+        pathMonitor.start(queue: pathMonitorQueue)
+    }
+
+    private func suspendForSystemTransition(_ reason: String) {
+        guard !isSystemSuspended else { return }
+        isSystemSuspended = true
+        appLog("\(reason) — stopping PTZ and releasing playback")
+        stopPTZ(cameraID: fullscreenCameraID)
+        CameraPlayerManager.shared.stopAll()
+    }
+
+    private func resumeAfterSystemTransition(_ reason: String) {
+        isSystemSuspended = false
+        appLog(reason)
+        guard networkAvailable else {
+            statusMessage = "Waiting for network…"
+            return
+        }
+        recoverAfterConnectivityChange()
+    }
+
+    private func handleNetworkPath(_ available: Bool) {
+        guard available != networkAvailable else { return }
+        networkAvailable = available
+        if !available {
+            appLog("Network unavailable — pausing streams", .warn)
+            statusMessage = "Waiting for network…"
+            stopPTZ(cameraID: fullscreenCameraID)
+            CameraPlayerManager.shared.stopAll()
+        } else if !isSystemSuspended {
+            appLog("Network restored")
+            recoverAfterConnectivityChange()
+        }
+    }
+
+    private func recoverAfterConnectivityChange() {
+        guard connectionState == .connected else { return }
+        statusMessage = "Network restored — reconnecting streams…"
+        CameraPlayerManager.shared.restartVisibleStreams()
+        fetchCameraStatus()
+    }
+
+    private func handleThermalChange() {
+        let state = ProcessInfo.processInfo.thermalState
+        CameraPlayerManager.shared.setThermalPressure(state)
+        switch state {
+        case .serious:
+            appLog("Thermal pressure serious — reducing active decoder budget", .warn)
+        case .critical:
+            appLog("Thermal pressure critical — aggressively reducing active decoder budget", .error)
+        case .nominal:
+            appLog("Thermal pressure returned to nominal")
+        default:
+            break
+        }
+    }
+
+    deinit {
+        statusPollTimer?.invalidate()
+        statsTimer?.invalidate()
+        pathMonitor.cancel()
     }
 
     private func logStats() {
@@ -130,7 +233,7 @@ final class AppState: ObservableObject {
 
     /// Timer tick; only actually hits the API when needed.
     private func pollCameraStatus() {
-        guard connectionState == .connected else { return }
+        guard connectionState == .connected, networkAvailable, !isSystemSuspended else { return }
         let anyOffline = camerasByID.values.contains { $0.directURL == nil && !$0.isOnline }
         let slowDue = Date().timeIntervalSince(lastStatusFetch) >= slowPollSeconds
         // Poll often while something is offline (to catch recovery), otherwise
@@ -150,7 +253,7 @@ final class AppState: ObservableObject {
     }
 
     private func fetchCameraStatus() {
-        guard !isFetchingStatus else { return }
+        guard !isFetchingStatus, networkAvailable, !isSystemSuspended else { return }
         isFetchingStatus = true
         lastStatusFetch = Date()
         Task { [weak self, apiClient] in
