@@ -13,10 +13,8 @@ enum ConnectionState: String {
 /// the configurable grid views, the current selection/fullscreen state, and the
 /// Stream Deck control server.
 ///
-/// Not annotated `@MainActor`: the control server invokes the
-/// `ControlServerHandler` methods on the main thread synchronously, and async
-/// network work hops back to the main thread explicitly. All `@Published`
-/// mutations happen on the main thread.
+/// Main-actor owned: every published/UI mutation and control-server handler is
+/// serialized on the UI actor; networking remains isolated in API actors.
 @MainActor
 final class AppState: ObservableObject {
     // MARK: Published state
@@ -52,6 +50,10 @@ final class AppState: ObservableObject {
 
     init() {
         self.config = ConfigStore.shared.load()
+        if let warning = ConfigStore.shared.lastWarning {
+            self.statusMessage = warning
+            appLog(warning, .warn)
+        }
         if config.views.isEmpty {
             // Seed with a single empty "All Cameras" view; populated after connect.
             config.views = [CameraGridConfig(name: "All Cameras", layout: .auto, cameraIDs: [])]
@@ -98,7 +100,7 @@ final class AppState: ObservableObject {
         statusPollTimer = timer
 
         // Periodic diagnostics: CPU / memory / per-stream state.
-        let stats = Timer(timeInterval: 10, repeats: true) { [weak self] _ in
+        let stats = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.logStats() }
         }
         RunLoop.main.add(stats, forMode: .common)
@@ -229,7 +231,11 @@ final class AppState: ObservableObject {
     // MARK: - Configuration persistence
 
     func saveConfig() {
-        ConfigStore.shared.save(config)
+        if !ConfigStore.shared.save(config),
+           let warning = ConfigStore.shared.lastWarning {
+            statusMessage = warning
+            appLog(warning, .error)
+        }
     }
 
     func updateConnection(_ connection: ConnectionSettings, password: String?) {

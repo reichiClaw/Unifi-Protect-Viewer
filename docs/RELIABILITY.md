@@ -56,10 +56,13 @@ The app also actively protects itself:
 
 ## 3. If it still crashes — get the evidence
 
-The app records CPU, memory, memory‑pressure events and crashes to its own log:
+The app records CPU, memory and memory-pressure events in `app.log`; fatal
+signal/exception output is kept separately in `crash.log` so normal rotation
+cannot erase it:
 
 - **In‑app:** Settings → Reliability → *Reveal log file in Finder* (or the log
-  window). The log rotates automatically so it stays readable over long runs.
+  window). Logs rotate automatically with three retained backups, including
+  across automatic relaunches.
 - **macOS reports:** `~/Library/Logs/DiagnosticReports/`. A `JetsamEvent‑*.ips`
   there means the app was killed for using too much memory (see section 2). A
   regular `.ips`/crash report with a backtrace means an in‑app/engine crash —

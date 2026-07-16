@@ -41,6 +41,9 @@ private struct ReliabilitySettingsTab: View {
 
             Section {
                 Button("Reveal log file in Finder") { revealLog() }
+                Button("Reveal crash log in Finder") {
+                    NSWorkspace.shared.activateFileViewerSelecting([AppLog.shared.crashFileURL])
+                }
                 LabeledContent("Log file", value: AppLog.shared.fileURL.path)
                     .font(.caption)
                     .textSelection(.enabled)

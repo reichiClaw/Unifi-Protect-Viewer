@@ -41,12 +41,14 @@ final class AppLog: ObservableObject {
     @Published private(set) var entries: [Entry] = []
 
     let fileURL: URL
+    let crashFileURL: URL
     private let queue = DispatchQueue(label: "com.unifiprotectviewer.applog")
     private let maxEntries = 5000
     private let formatter: DateFormatter
     /// Rotate the on-disk log once it grows past this, so a multi-day 24/7
     /// session stays readable and bounded (one backup is kept as `app.log.1`).
     private let maxFileBytes = 5_000_000
+    private let maxBackups = 3
     private var writeCount = 0  // only touched on `queue`
 
     private init() {
@@ -54,17 +56,16 @@ final class AppLog: ObservableObject {
         let dir = base.appendingPathComponent("UnifiProtectViewer", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         fileURL = dir.appendingPathComponent("app.log")
+        crashFileURL = dir.appendingPathComponent("crash.log")
 
         formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"
 
-        // Start each launch with a session marker (and cap file growth).
+        // Rotate instead of truncating so the previous crash/session evidence
+        // always survives an automatic relaunch.
+        AppLog.rotateIfOversize(fileURL, maximumBytes: maxFileBytes, backups: maxBackups)
+        AppLog.rotateIfOversize(crashFileURL, maximumBytes: 2_000_000, backups: maxBackups)
         queue.async { [fileURL, formatter] in
-            // If the file is very large (>2 MB), truncate it.
-            if let size = try? FileManager.default.attributesOfItem(atPath: fileURL.path)[.size] as? Int,
-               size > 2_000_000 {
-                try? "".write(to: fileURL, atomically: true, encoding: .utf8)
-            }
             let header = "\n===== UniFi Protect Viewer launched \(formatter.string(from: Date())) =====\n"
             AppLog.append(header, to: fileURL)
         }
@@ -72,8 +73,8 @@ final class AppLog: ObservableObject {
 
     func log(_ message: String, level: Level = .info) {
         let entry = Entry(date: Date(), level: level, message: message)
-        let line = entry.formatted(formatter) + "\n"
-        queue.async { [weak self, fileURL] in
+        queue.async { [weak self, fileURL, formatter] in
+            let line = entry.formatted(formatter) + "\n"
             AppLog.append(line, to: fileURL)
             self?.rotateIfNeeded(fileURL)
         }
@@ -89,12 +90,22 @@ final class AppLog: ObservableObject {
 
     func clear() {
         DispatchQueue.main.async { self.entries.removeAll() }
-        queue.async { [fileURL] in try? "".write(to: fileURL, atomically: true, encoding: .utf8) }
+        queue.async { [fileURL, crashFileURL, maxBackups = self.maxBackups] in
+            try? "".write(to: fileURL, atomically: true, encoding: .utf8)
+            try? "".write(to: crashFileURL, atomically: true, encoding: .utf8)
+            for index in 1...maxBackups {
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: fileURL.path + ".\(index)"))
+                try? FileManager.default.removeItem(at: URL(fileURLWithPath: crashFileURL.path + ".\(index)"))
+            }
+        }
     }
 
     /// All in-memory entries joined into a single string (for copy/share).
     func exportText() -> String {
-        entries.map { $0.formatted(formatter) }.joined(separator: "\n")
+        let snapshot = entries
+        return queue.sync {
+            snapshot.map { $0.formatted(formatter) }.joined(separator: "\n")
+        }
     }
 
     /// Rotate the log file mid-run when it exceeds `maxFileBytes`. Runs on
@@ -105,11 +116,33 @@ final class AppLog: ObservableObject {
         guard writeCount % 200 == 0 else { return }
         guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
               size > maxFileBytes else { return }
-        let backup = url.deletingLastPathComponent().appendingPathComponent("app.log.1")
-        try? FileManager.default.removeItem(at: backup)
-        try? FileManager.default.moveItem(at: url, to: backup)
-        let marker = "===== log rotated \(formatter.string(from: Date())) (previous kept as app.log.1) =====\n"
+        AppLog.rotate(url, backups: maxBackups)
+        let marker = "===== log rotated \(formatter.string(from: Date())) (previous files kept as app.log.1…\(maxBackups)) =====\n"
         AppLog.append(marker, to: url)
+    }
+
+    private static func rotateIfOversize(_ url: URL, maximumBytes: Int, backups: Int) {
+        guard let size = try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
+              size > maximumBytes else { return }
+        rotate(url, backups: backups)
+    }
+
+    private static func rotate(_ url: URL, backups: Int) {
+        guard backups > 0 else { return }
+        let fm = FileManager.default
+        try? fm.removeItem(at: URL(fileURLWithPath: url.path + ".\(backups)"))
+        if backups > 1 {
+            for index in stride(from: backups - 1, through: 1, by: -1) {
+                let source = URL(fileURLWithPath: url.path + ".\(index)")
+                let destination = URL(fileURLWithPath: url.path + ".\(index + 1)")
+                if fm.fileExists(atPath: source.path) {
+                    try? fm.moveItem(at: source, to: destination)
+                }
+            }
+        }
+        if fm.fileExists(atPath: url.path) {
+            try? fm.moveItem(at: url, to: URL(fileURLWithPath: url.path + ".1"))
+        }
     }
 
     private static func append(_ string: String, to url: URL) {
@@ -121,6 +154,7 @@ final class AppLog: ObservableObject {
         } else {
             try? data.write(to: url, options: .atomic)
         }
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 }
 
@@ -215,6 +249,7 @@ enum CrashReporter {
         }
         let count = backtrace(CrashReporter.frameBuffer, Int32(CrashReporter.maxFrames))
         backtrace_symbols_fd(CrashReporter.frameBuffer, count, CrashReporter.logFD)
+        _ = fsync(CrashReporter.logFD)
         // Re-raise with the default handler so macOS still writes its crash report.
         signal(sig, SIG_DFL)
         raise(sig)
@@ -223,5 +258,6 @@ enum CrashReporter {
     private static func writeRaw(_ string: String) {
         guard logFD >= 0 else { return }
         string.withCString { _ = write(logFD, $0, strlen($0)) }
+        _ = fsync(logFD)
     }
 }

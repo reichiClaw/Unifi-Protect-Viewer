@@ -159,6 +159,7 @@ struct ManualCamera: Codable, Identifiable, Equatable {
 
 /// Root persisted document for the app.
 struct AppConfiguration: Codable {
+    var configVersion: Int = 1
     var connection: ConnectionSettings = ConnectionSettings()
     var views: [CameraGridConfig] = []
     /// Local control server (Stream Deck bridge) settings.
@@ -175,6 +176,7 @@ struct AppConfiguration: Codable {
     /// Resilient decoding so adding fields never invalidates a saved config.
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        configVersion = try c.decodeIfPresent(Int.self, forKey: .configVersion) ?? 1
         connection = try c.decodeIfPresent(ConnectionSettings.self, forKey: .connection) ?? ConnectionSettings()
         views = try c.decodeIfPresent([CameraGridConfig].self, forKey: .views) ?? []
         control = try c.decodeIfPresent(ControlServerSettings.self, forKey: .control) ?? ControlServerSettings()

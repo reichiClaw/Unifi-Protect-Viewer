@@ -4,9 +4,9 @@ import AppKit
 /// Installs crash diagnostics as early as possible and logs launch/quit.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
-        CrashReporter.install(logFileURL: AppLog.shared.fileURL)
+        CrashReporter.install(logFileURL: AppLog.shared.crashFileURL)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
-        appLog("App launched (version \(version))")
+        appLog("App launched (version \(version), macOS \(ProcessInfo.processInfo.operatingSystemVersionString), session \(UUID().uuidString))")
     }
 
     func applicationWillTerminate(_ notification: Notification) {

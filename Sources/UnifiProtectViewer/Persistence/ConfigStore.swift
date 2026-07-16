@@ -7,6 +7,7 @@ final class ConfigStore {
     static let shared = ConfigStore()
 
     private let fileManager = FileManager.default
+    private(set) var lastWarning: String?
 
     private var directory: URL {
         let base = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -19,32 +20,80 @@ final class ConfigStore {
     }
 
     private var configURL: URL { directory.appendingPathComponent("config.json") }
+    private var backupURL: URL { directory.appendingPathComponent("config.json.bak") }
     private var credentialsURL: URL { directory.appendingPathComponent("credentials.json") }
 
     func load() -> AppConfiguration {
-        guard let data = try? Data(contentsOf: configURL) else {
-            return AppConfiguration()
+        lastWarning = nil
+        guard fileManager.fileExists(atPath: configURL.path) else {
+            return loadBackupOrDefaults(reason: nil)
         }
         do {
-            var config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+            var config = try decodeConfig(at: configURL)
             if hydrateManualStreams(in: &config) {
-                save(config)
+                _ = save(config, preserveCurrentAsBackup: false)
             }
             return config
         } catch {
-            NSLog("ConfigStore: failed to decode config: \(error). Using defaults.")
-            return AppConfiguration()
+            let corrupt = directory.appendingPathComponent("config.corrupt-\(Int(Date().timeIntervalSince1970)).json")
+            try? fileManager.moveItem(at: configURL, to: corrupt)
+            return loadBackupOrDefaults(reason: "Configuration was damaged and preserved as \(corrupt.lastPathComponent).")
         }
     }
 
-    func save(_ config: AppConfiguration) {
+    @discardableResult
+    func save(_ config: AppConfiguration, preserveCurrentAsBackup: Bool = true) -> Bool {
         do {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             let data = try encoder.encode(config)
+            // Verify the exact bytes before replacing the last-known-good file.
+            _ = try JSONDecoder().decode(AppConfiguration.self, from: data)
+            if preserveCurrentAsBackup, fileManager.fileExists(atPath: configURL.path) {
+                try? fileManager.removeItem(at: backupURL)
+                try fileManager.copyItem(at: configURL, to: backupURL)
+                try? fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
+            } else if !preserveCurrentAsBackup {
+                try? fileManager.removeItem(at: backupURL)
+            }
             try data.write(to: configURL, options: .atomic)
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+            lastWarning = nil
+            return true
         } catch {
-            NSLog("ConfigStore: failed to save config: \(error)")
+            lastWarning = "Could not save configuration: \(error.localizedDescription)"
+            NSLog("ConfigStore: \(lastWarning!)")
+            return false
+        }
+    }
+
+    private func decodeConfig(at url: URL) throws -> AppConfiguration {
+        let data = try Data(contentsOf: url)
+        let config = try JSONDecoder().decode(AppConfiguration.self, from: data)
+        guard config.configVersion <= 1 else { throw StoreError.unsupportedVersion(config.configVersion) }
+        return config
+    }
+
+    private func loadBackupOrDefaults(reason: String?) -> AppConfiguration {
+        if fileManager.fileExists(atPath: backupURL.path),
+           var backup = try? decodeConfig(at: backupURL) {
+            _ = hydrateManualStreams(in: &backup)
+            lastWarning = [reason, "Recovered the last-known-good configuration backup."]
+                .compactMap { $0 }.joined(separator: " ")
+            _ = save(backup, preserveCurrentAsBackup: false)
+            return backup
+        }
+        lastWarning = reason
+        return AppConfiguration()
+    }
+
+    private enum StoreError: LocalizedError {
+        case unsupportedVersion(Int)
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedVersion(let version):
+                return "Configuration version \(version) is newer than this app supports."
+            }
         }
     }
 
